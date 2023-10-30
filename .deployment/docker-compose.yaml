@@ -1,0 +1,53 @@
+version: "3.4"
+services:
+  architecture-postgresdb:
+    container_name: architecture-postgresdb
+    image: postgres:14.4-alpine
+    volumes:
+      - ../../pg-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: "architecture"
+    ports:
+      - ${POSTGRES_PORT}:5432
+    networks:
+      - architecture
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+    restart: always
+
+  go-clean-architecture:
+    build: ../.
+    container_name: go-clean-architecture
+    image: go-clean-architecture
+    environment:
+      PG_DB_NAME: "architecture"
+      PG_HOST: architecture-postgresdb
+      PG_PORT: 5432
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      PG_SSLMODE: "disable"
+      PG_URL: ${PG_URL}
+    ports:
+      - 9000:8080
+    deploy:
+      resources:
+        limits:
+          memory: 2560M
+    depends_on:
+      - architecture-postgresdb
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+    networks:
+      - architecture
+    links:
+      - architecture-postgresdb
+
+networks:
+  architecture:
+    driver: bridge

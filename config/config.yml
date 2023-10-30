@@ -1,0 +1,31 @@
+app:
+  name: "go-clean-architecture"
+  # values: localhost, staging, production
+  env: "localhost"
+  version: "0.1.0"
+
+http:
+  port: "8080"
+  cors: true
+
+logger:
+  # zap config level
+  # values: debug, info, error
+  log_level: "debug"
+  rollbar_env: "go-clean-architecture"
+
+postgres:
+  db_name: "go-clean-architecture"
+  host: "localhost"
+  port: "5432"
+  user: "user"
+  password: "pass"
+  sslmode: "disable"
+
+s3aws:
+  key_id: ""
+  access_key: ""
+  region: "ap-southeast-1"
+  acl: "public-read"
+  bucket: "assets.bucket.com"
+  path_avatar: ""

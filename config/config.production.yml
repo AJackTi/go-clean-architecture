@@ -1,0 +1,8 @@
+# for production only
+
+http:
+  cors: true
+
+logger:
+  # zap config level
+  log_level: "info"
