@@ -91,7 +91,7 @@ jobs:
           go test -v -coverpkg=${CVPKG} -coverprofile=coverage.out -covermode=count  ./internal/...
 
       - name: Setup aws cli
-        uses: unfor19/install-aws-cli-action@v1.0.6
+        uses: unfor19/install-aws-cli-action@v1.0.7
 
       - name: Generate covarege Status
         run: |
