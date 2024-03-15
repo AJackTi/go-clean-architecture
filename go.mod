@@ -4,7 +4,7 @@ go 1.21.3
 
 require (
 	firebase.google.com/go v3.13.0+incompatible
-	github.com/aws/aws-sdk-go v1.50.38
+	github.com/aws/aws-sdk-go v1.51.0
 	github.com/bits-and-blooms/bloom/v3 v3.6.0
 	github.com/ethereum/go-ethereum v1.13.14
 	github.com/gin-contrib/cors v1.7.0
