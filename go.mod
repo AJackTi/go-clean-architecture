@@ -10,7 +10,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.0
 	github.com/ethereum/go-ethereum v1.15.11
 	github.com/gin-contrib/cors v1.7.5
-	github.com/gin-gonic/gin v1.10.0
+	github.com/gin-gonic/gin v1.10.1
 	github.com/golang-migrate/migrate/v4 v4.18.3
 	github.com/google/uuid v1.6.0
 	github.com/ilyakaznacheev/cleanenv v1.5.0
