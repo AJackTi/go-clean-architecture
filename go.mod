@@ -8,7 +8,7 @@ require (
 	firebase.google.com/go v3.13.0+incompatible
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/bits-and-blooms/bloom/v3 v3.7.0
-	github.com/ethereum/go-ethereum v1.16.1
+	github.com/ethereum/go-ethereum v1.16.2
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang-migrate/migrate/v4 v4.18.3
