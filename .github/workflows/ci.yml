@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
       - name: WriteGoList
         run: go list -json -m all > go.list
       - name: Nancy
@@ -72,7 +72,7 @@ jobs:
       - uses: docker-practice/actions-setup-docker@master
         with:
           docker_version: "20.10"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ~1.18
       - name: Setup Golang caches
