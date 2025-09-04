@@ -15,7 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/ilyakaznacheev/cleanenv v1.5.0
 	github.com/swaggo/files v1.0.1
-	github.com/swaggo/gin-swagger v1.6.0
+	github.com/swaggo/gin-swagger v1.6.1
 	github.com/upper/db/v4 v4.10.0
 	github.com/xuri/excelize/v2 v2.9.1
 	go.uber.org/zap v1.27.0
