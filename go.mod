@@ -18,7 +18,7 @@ require (
 	github.com/swaggo/gin-swagger v1.6.1
 	github.com/upper/db/v4 v4.10.0
 	github.com/xuri/excelize/v2 v2.10.0
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.27.1
 	google.golang.org/api v0.256.0
 )
 
