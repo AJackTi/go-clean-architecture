@@ -1,8 +1,6 @@
 module github.com/AJackTi/go-clean-architecture
 
-go 1.24.0
-
-toolchain go1.24.1
+go 1.25.0
 
 require (
 	firebase.google.com/go v3.13.0+incompatible
@@ -19,7 +17,7 @@ require (
 	github.com/upper/db/v4 v4.10.0
 	github.com/xuri/excelize/v2 v2.10.0
 	go.uber.org/zap v1.27.1
-	google.golang.org/api v0.267.0
+	google.golang.org/api v0.268.0
 )
 
 require (
