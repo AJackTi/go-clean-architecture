@@ -17,7 +17,7 @@ require (
 	github.com/upper/db/v4 v4.10.0
 	github.com/xuri/excelize/v2 v2.10.1
 	go.uber.org/zap v1.27.1
-	google.golang.org/api v0.273.0
+	google.golang.org/api v0.273.1
 )
 
 require (
