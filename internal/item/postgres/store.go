@@ -32,6 +32,17 @@ const (
 		FROM items
 		ORDER BY created_at DESC, id DESC
 		LIMIT $1 OFFSET $2`
+	cursorListFirstQuery = `
+		SELECT id, name, description, created_at
+		FROM items
+		ORDER BY created_at DESC, id DESC
+		LIMIT $1`
+	cursorListAfterQuery = `
+		SELECT id, name, description, created_at
+		FROM items
+		WHERE (created_at, id) < ($1, $2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`
 	idempotencyCleanupQuery = `
 		WITH expired AS (
 			SELECT key_hash
@@ -65,6 +76,8 @@ type Store struct {
 var _ item.Store = (*Store)(nil)
 
 var _ item.IdempotentCreateStore = (*Store)(nil)
+
+var _ item.CursorStore = (*Store)(nil)
 
 type querier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -253,6 +266,68 @@ func (store *Store) List(ctx context.Context, params item.ListParams) ([]item.It
 		return nil, translateError("list rows", err)
 	}
 	return values, nil
+}
+
+// ListAfter implements keyset pagination using the same deterministic order
+// as List. PostgreSQL's composite comparison keeps the predicate sargable
+// against idx_items_created_at_id and avoids offset scans for deep pages.
+func (store *Store) ListAfter(ctx context.Context, params item.CursorListParams) ([]item.Item, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	if store == nil || store.db == nil {
+		return nil, item.ErrCursorUnavailable
+	}
+	if params.Limit < 0 || params.Limit > item.MaxPageSize+1 {
+		return nil, &item.ValidationError{Field: "limit", Reason: "is outside the supported range"}
+	}
+	if params.After != nil {
+		if err := params.After.Validate(); err != nil {
+			return nil, errors.Join(item.ErrCursorState, err)
+		}
+	}
+	if params.Limit == 0 {
+		return []item.Item{}, nil
+	}
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if params.After == nil {
+		rows, err = store.db.Query(ctx, cursorListFirstQuery, params.Limit)
+	} else {
+		after := params.After
+		rows, err = store.db.Query(ctx, cursorListAfterQuery, after.CreatedAt.UTC(), after.ID, params.Limit)
+	}
+	if err != nil {
+		return nil, translateCursorError("list after", err)
+	}
+	defer rows.Close()
+	values := make([]item.Item, 0, params.Limit)
+	for rows.Next() {
+		var value item.Item
+		if err := rows.Scan(&value.ID, &value.Name, &value.Description, &value.CreatedAt); err != nil {
+			return nil, translateCursorError("list after scan", err)
+		}
+		value.CreatedAt = value.CreatedAt.UTC()
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, translateCursorError("list after rows", err)
+	}
+	return values, nil
+}
+
+func translateCursorError(operation string, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, item.ErrInvalidInput) || errors.Is(err, item.ErrCursorState) {
+		return err
+	}
+	translated := translateError(operation, err)
+	return fmt.Errorf("item postgres cursor %s: %w", operation, errors.Join(item.ErrCursorUnavailable, translated))
 }
 
 func translateError(operation string, err error) error {

@@ -58,10 +58,11 @@ type ListParams struct {
 
 // Page is the stable, transport-neutral result of a list operation.
 type Page struct {
-	Items   []Item `json:"items"`
-	Limit   int    `json:"limit"`
-	Offset  int    `json:"offset"`
-	HasMore bool   `json:"has_more"`
+	Items      []Item `json:"items"`
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	HasMore    bool   `json:"has_more"`
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 // ValidateCreateInput validates and canonicalises client input.  Name and

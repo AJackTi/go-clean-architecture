@@ -92,3 +92,25 @@ Idempotency is transport-level retry protection, not authorization, payment
 deduplication, or a permanent business operation identifier. The 24-hour
 retention window is intentionally finite; use a domain-owned durable operation
 ID when a longer guarantee is required.
+
+## Cursor pagination
+
+List responses may expose a signed `meta.next_cursor`; clients can send it as
+the `cursor` query parameter on the next request. Cursor and offset parameters
+are mutually exclusive. The token is a versioned, URL-safe HMAC-SHA-256 wire
+value containing only the `(created_at,id)` ordering boundary and a 24-hour
+expiry. It is integrity-protected but not encrypted, so it must not be treated
+as a secret or placed in logs, analytics, or durable application data.
+
+Set `CURSOR_SIGNING_KEY` to a randomly generated 32-byte secret, encoded as
+exactly 64 hexadecimal characters. Every replica and restart that
+serves the same cursor population must use the same key. Rotate it through a
+planned deployment: the current codec has one active key, so rotation
+invalidates outstanding cursors and clients should restart from the first
+page. Production configuration rejects a missing key; the value in
+`.env.example` is a deliberately non-secret development placeholder.
+
+Malformed, forged, expired, or cross-purpose tokens return the stable
+`400 invalid_cursor` response. Cursor pagination uses the same Item Store as
+ordinary reads; a backend without the cohesive capability fails closed with
+`503 cursor_unavailable` rather than silently switching to offset scans.

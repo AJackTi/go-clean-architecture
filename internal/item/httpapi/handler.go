@@ -170,33 +170,74 @@ func (h *Handler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, dataResponse[item.Item]{Data: found})
 }
 
-// List handles GET /items?limit=<n>&offset=<n>.
+// List handles GET /items?limit=<n>&offset=<n> and the additive keyset form
+// GET /items?limit=<n>&cursor=<opaque-token>. Offset remains supported for
+// compatibility; cursor and offset cannot be combined.
 func (h *Handler) List(c *gin.Context) {
-	params, err := parseListParams(c)
+	request, err := parseListRequest(c)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, "bad_request", "invalid pagination parameters")
 		return
 	}
 	if h.service == nil {
+		if request.cursor != nil {
+			writeServiceError(c, item.ErrCursorUnavailable)
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	page, err := h.service.List(c.Request.Context(), params)
-	if err != nil {
-		writeServiceError(c, err)
-		return
+	var (
+		items      []item.Item
+		limit      int
+		offset     int
+		hasOffset  bool
+		hasMore    bool
+		nextCursor string
+	)
+	if request.cursor != nil {
+		cursorService, ok := h.service.(item.CursorLister)
+		if !ok {
+			writeServiceError(c, item.ErrCursorUnavailable)
+			return
+		}
+		cursorPage, cursorErr := cursorService.ListCursor(c.Request.Context(), *request.cursor)
+		if cursorErr != nil {
+			writeServiceError(c, cursorErr)
+			return
+		}
+		items = cursorPage.Items
+		limit = cursorPage.Limit
+		hasMore = cursorPage.HasMore
+		nextCursor = cursorPage.NextCursor
+	} else {
+		page, listErr := h.service.List(c.Request.Context(), *request.offset)
+		if listErr != nil {
+			writeServiceError(c, listErr)
+			return
+		}
+		items = page.Items
+		limit = page.Limit
+		offset = page.Offset
+		hasOffset = true
+		hasMore = page.HasMore
+		nextCursor = page.NextCursor
 	}
-	items := page.Items
 	if items == nil {
 		items = []item.Item{}
+	}
+	var offsetValue *int
+	if hasOffset {
+		offsetValue = &offset
 	}
 	c.JSON(http.StatusOK, listResponse{
 		Data: items,
 		Meta: pageMeta{
-			Limit:   page.Limit,
-			Offset:  page.Offset,
-			HasMore: page.HasMore,
+			Limit:      limit,
+			Offset:     offsetValue,
+			HasMore:    hasMore,
+			NextCursor: nextCursor,
 		},
 	})
 }
@@ -216,9 +257,10 @@ type listResponse struct {
 }
 
 type pageMeta struct {
-	Limit   int  `json:"limit"`
-	Offset  int  `json:"offset"`
-	HasMore bool `json:"has_more"`
+	Limit      int    `json:"limit"`
+	Offset     *int   `json:"offset,omitempty"`
+	HasMore    bool   `json:"has_more"`
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 type errorResponse struct {
@@ -232,6 +274,10 @@ type errorDetails struct {
 
 func writeServiceError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, item.ErrCursorUnavailable), errors.Is(err, item.ErrCursorState):
+		writeError(c, http.StatusServiceUnavailable, "cursor_unavailable", "cursor pagination is temporarily unavailable")
+	case errors.Is(err, item.ErrInvalidCursor):
+		writeError(c, http.StatusBadRequest, "invalid_cursor", "invalid pagination cursor")
 	case errors.Is(err, item.ErrIdempotencyConflict):
 		writeError(c, http.StatusConflict, "idempotency_conflict", "idempotency key was used with a different request")
 	case errors.Is(err, item.ErrIdempotencyInProgress):
@@ -295,35 +341,64 @@ func decodeStrictJSON(c *gin.Context, destination any, maxBytes int64) error {
 
 var errTrailingJSON = errors.New("trailing JSON value")
 
-func parseListParams(c *gin.Context) (item.ListParams, error) {
-	values := c.Request.URL.Query()
+type listRequest struct {
+	offset *item.ListParams
+	cursor *item.CursorRequest
+}
+
+func parseListRequest(c *gin.Context) (listRequest, error) {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return listRequest{}, errInvalidPagination
+	}
+	// URL.Query intentionally drops malformed percent-encoded pairs. That
+	// behaviour would make a malformed `cursor` disappear and silently select
+	// the legacy offset path, so parse the raw query and fail closed instead.
+	values, queryErr := url.ParseQuery(c.Request.URL.RawQuery)
+	if queryErr != nil {
+		return listRequest{}, errInvalidPagination
+	}
 	limit, err := parseQueryInt(values, "limit", item.DefaultPageSize)
 	if err != nil {
-		return item.ListParams{}, errInvalidPagination
+		return listRequest{}, errInvalidPagination
 	}
 	// An explicit zero is a convenient way for clients to request the server
-	// default.  Negative values and values above the configured maximum remain
+	// default. Negative values and values above the configured maximum remain
 	// invalid rather than being silently normalized.
 	if limit == 0 {
 		limit = item.DefaultPageSize
 	}
 	if limit < 0 || limit > item.MaxPageSize {
-		return item.ListParams{}, errInvalidPagination
+		return listRequest{}, errInvalidPagination
 	}
+
+	offsetValues, hasOffset := values["offset"]
 	offset, err := parseQueryInt(values, "offset", 0)
 	if err != nil || offset < 0 {
-		return item.ListParams{}, errInvalidPagination
+		return listRequest{}, errInvalidPagination
 	}
-	return item.ListParams{Limit: limit, Offset: offset}, nil
+	cursorValues, hasCursor := values["cursor"]
+	if !hasCursor {
+		return listRequest{offset: &item.ListParams{Limit: limit, Offset: offset}}, nil
+	}
+	// A cursor is an opaque continuation token. Empty or duplicate values are
+	// rejected instead of silently selecting one request value. The token's
+	// cryptographic validity is checked by the Item service, not this adapter.
+	if hasOffset || len(offsetValues) != 0 || len(cursorValues) != 1 || cursorValues[0] == "" || len(cursorValues[0]) > item.MaxCursorBytes {
+		return listRequest{}, errInvalidPagination
+	}
+	return listRequest{cursor: &item.CursorRequest{Limit: limit, Cursor: cursorValues[0]}}, nil
 }
 
 func parseQueryInt(values url.Values, key string, fallback int) (int, error) {
 	entries, ok := values[key]
-	if !ok || len(entries) == 0 || entries[0] == "" {
+	if !ok {
 		return fallback, nil
 	}
 	if len(entries) != 1 {
 		return 0, errInvalidPagination
+	}
+	if entries[0] == "" {
+		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(entries[0])
 	if err != nil {

@@ -14,3 +14,5 @@ the bootstrap history that predates automated releases.
 - Keep architecture and operational documentation current with each feature.
 - Add optional atomic, scoped idempotency keys for safe Item-create retries,
   replay responses, and PostgreSQL migration support.
+- Add signed keyset cursor pagination for stable deep-page continuation while
+  retaining the legacy offset query contract.

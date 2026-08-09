@@ -28,6 +28,9 @@ func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	if cfg.DatabaseURL != defaultDatabaseURL {
 		t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, defaultDatabaseURL)
 	}
+	if cfg.CursorSigningKey != "" {
+		t.Errorf("CursorSigningKey = %q, want empty when not configured", cfg.CursorSigningKey)
+	}
 	if cfg.MetricsEnabled != defaultMetricsEnabled {
 		t.Errorf("MetricsEnabled = %t, want %t", cfg.MetricsEnabled, defaultMetricsEnabled)
 	}
@@ -76,6 +79,7 @@ func TestLoadReadsEnvironment(t *testing.T) {
 		"RATE_LIMIT_BURST":               "30",
 		"RATE_LIMIT_MAX_CLIENTS":         "500",
 		"RATE_LIMIT_IDLE_TTL":            "15m",
+		"CURSOR_SIGNING_KEY":             strings.Repeat("cd", sha256.Size),
 	}
 	lookup := func(key string) (string, bool) {
 		value, ok := values[key]
@@ -95,7 +99,8 @@ func TestLoadReadsEnvironment(t *testing.T) {
 		cfg.OTELTracesSamplerArg != 0.25 || !cfg.AuthEnabled ||
 		cfg.AuthBearerTokenSHA256 != values["AUTH_BEARER_TOKEN_SHA256"] || !cfg.RateLimitEnabled ||
 		cfg.RateLimitRequestsPerSecond != 12.5 || cfg.RateLimitBurst != 30 ||
-		cfg.RateLimitMaxClients != 500 || cfg.RateLimitIdleTTL != 15*time.Minute {
+		cfg.RateLimitMaxClients != 500 || cfg.RateLimitIdleTTL != 15*time.Minute ||
+		cfg.CursorSigningKey != values["CURSOR_SIGNING_KEY"] {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
@@ -126,6 +131,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "auth enabled without digest", values: map[string]string{"AUTH_ENABLED": "true"}},
 		{name: "short auth digest", values: map[string]string{"AUTH_ENABLED": "true", "AUTH_BEARER_TOKEN_SHA256": "abcd"}},
 		{name: "non-hex auth digest", values: map[string]string{"AUTH_ENABLED": "true", "AUTH_BEARER_TOKEN_SHA256": strings.Repeat("zz", sha256.Size)}},
+		{name: "empty cursor key", values: map[string]string{"CURSOR_SIGNING_KEY": ""}},
+		{name: "short cursor key", values: map[string]string{"CURSOR_SIGNING_KEY": "abcd"}},
+		{name: "non-hex cursor key", values: map[string]string{"CURSOR_SIGNING_KEY": strings.Repeat("zz", sha256.Size)}},
 		{name: "invalid rate flag", values: map[string]string{"RATE_LIMIT_ENABLED": "sometimes"}},
 		{name: "non-numeric rate", values: map[string]string{"RATE_LIMIT_REQUESTS_PER_SECOND": "fast"}},
 		{name: "zero enabled rate", values: map[string]string{"RATE_LIMIT_ENABLED": "true", "RATE_LIMIT_REQUESTS_PER_SECOND": "0"}},
@@ -197,6 +205,22 @@ func TestConfigValidatePreservesLegacyLiteralCompatibility(t *testing.T) {
 	}
 }
 
+func TestCursorSigningKeyBytes(t *testing.T) {
+	key := strings.Repeat("ab", sha256.Size)
+	value, err := (Config{CursorSigningKey: key}).CursorSigningKeyBytes()
+	if err != nil || len(value) != sha256.Size {
+		t.Fatalf("CursorSigningKeyBytes() = %d, %v; want %d bytes", len(value), err, sha256.Size)
+	}
+	value[0] = 0
+	second, err := (Config{CursorSigningKey: key}).CursorSigningKeyBytes()
+	if err != nil || second[0] != 0xab {
+		t.Fatalf("CursorSigningKeyBytes returned aliased/incorrect data: %x, %v", second, err)
+	}
+	if value, err := (Config{}).CursorSigningKeyBytes(); err != nil || value != nil {
+		t.Fatalf("empty CursorSigningKeyBytes() = %x, %v; want nil", value, err)
+	}
+}
+
 func TestConfigValidateRejectsInvalidTelemetryValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -244,6 +268,7 @@ func TestConfigValidateRejectsInvalidText(t *testing.T) {
 		{name: "service name", mutate: func(cfg *Config, value string) { cfg.OTELServiceName = value }},
 		{name: "OTLP endpoint", mutate: func(cfg *Config, value string) { cfg.OTELExporterOTLPEndpoint = value }},
 		{name: "traces sampler", mutate: func(cfg *Config, value string) { cfg.OTELTracesSampler = value }},
+		{name: "cursor signing key", mutate: func(cfg *Config, value string) { cfg.CursorSigningKey = value }},
 	}
 	invalidValues := []string{"value\x00suffix", "value\nsuffix", string([]byte{'v', 0xff})}
 
@@ -269,18 +294,21 @@ func TestLoadRejectsPlaintextTelemetryInProduction(t *testing.T) {
 		{
 			"APP_ENV":                     "production",
 			"DATABASE_URL":                defaultDatabaseURL,
+			"CURSOR_SIGNING_KEY":          strings.Repeat("ab", sha256.Size),
 			"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4318",
 			"OTEL_EXPORTER_OTLP_INSECURE": "true",
 		},
 		{
 			"APP_ENV":                     "production",
 			"DATABASE_URL":                defaultDatabaseURL,
+			"CURSOR_SIGNING_KEY":          strings.Repeat("ab", sha256.Size),
 			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318",
 			"OTEL_EXPORTER_OTLP_INSECURE": "true",
 		},
 		{
 			"APP_ENV":                     "production",
 			"DATABASE_URL":                defaultDatabaseURL,
+			"CURSOR_SIGNING_KEY":          strings.Repeat("ab", sha256.Size),
 			"OTEL_EXPORTER_OTLP_INSECURE": "true",
 		},
 	}
@@ -301,12 +329,37 @@ func TestLoadAcceptsSecureTelemetryInProduction(t *testing.T) {
 		"APP_ENV":                     "production",
 		"DATABASE_URL":                defaultDatabaseURL,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector:4318/v1/traces",
+		"CURSOR_SIGNING_KEY":          strings.Repeat("ab", sha256.Size),
 	}
 	if _, err := load(func(key string) (string, bool) {
 		value, ok := values[key]
 		return value, ok
 	}); err != nil {
 		t.Fatalf("load secure production telemetry: %v", err)
+	}
+}
+
+func TestLoadRejectsDevelopmentCursorKeyInProduction(t *testing.T) {
+	values := map[string]string{
+		"APP_ENV":            "production",
+		"DATABASE_URL":       defaultDatabaseURL,
+		"CURSOR_SIGNING_KEY": developmentCursorKey,
+	}
+	if _, err := load(func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	}); err == nil {
+		t.Fatal("load accepted development cursor placeholder in production")
+	}
+}
+
+func TestConfigValidateRejectsDevelopmentCursorKeyRegardlessOfHexCase(t *testing.T) {
+	cfg := validConfig()
+	cfg.AppEnv = "production"
+	cfg.DatabaseURL = defaultDatabaseURL
+	cfg.CursorSigningKey = strings.ToUpper(developmentCursorKey)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted uppercase development cursor placeholder in production")
 	}
 }
 

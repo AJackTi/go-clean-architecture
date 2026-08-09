@@ -522,6 +522,91 @@ func TestListReturnsDataAndPaginationMetadata(t *testing.T) {
 	}
 }
 
+func TestListCursorDelegatesOpaqueTokenAndReturnsContinuation(t *testing.T) {
+	t.Parallel()
+
+	wantItems := []item.Item{
+		{ID: uuid.MustParse("15709605-fde8-49ce-b867-c9af294f2bf5"), Name: "keyboard"},
+		{ID: uuid.MustParse("09c5ec30-5908-4398-9df7-d0c14dd8e1d1"), Name: "mouse"},
+	}
+	const opaqueCursor = "v1_cursor-token"
+	var gotRequest item.CursorRequest
+	service := &cursorServiceStub{
+		serviceStub: &serviceStub{},
+		listCursor: func(_ context.Context, request item.CursorRequest) (item.CursorPage, error) {
+			gotRequest = request
+			return item.CursorPage{Items: wantItems, Limit: 2, HasMore: true, NextCursor: "v1_next-token"}, nil
+		},
+	}
+	response := performRequest(t, newRouter(service), http.MethodGet, "/api/v1/items?limit=2&cursor="+opaqueCursor, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", response.Code, response.Body.String())
+	}
+	if gotRequest != (item.CursorRequest{Limit: 2, Cursor: opaqueCursor}) {
+		t.Fatalf("cursor request = %#v, want limit/token", gotRequest)
+	}
+	var body struct {
+		Data []item.Item `json:"data"`
+		Meta struct {
+			Limit      int    `json:"limit"`
+			Offset     *int   `json:"offset"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
+		} `json:"meta"`
+	}
+	decodeResponse(t, response, &body)
+	if !itemsEqual(body.Data, wantItems) || body.Meta.Limit != 2 || !body.Meta.HasMore || body.Meta.NextCursor != "v1_next-token" {
+		t.Fatalf("cursor response = %#v, want items/meta", body)
+	}
+	if body.Meta.Offset != nil {
+		t.Fatalf("cursor response offset = %v, want omitted", *body.Meta.Offset)
+	}
+}
+
+func TestListCursorMapsInvalidAndUnavailable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid cursor", func(t *testing.T) {
+		t.Parallel()
+		service := &cursorServiceStub{serviceStub: &serviceStub{}, listCursor: func(context.Context, item.CursorRequest) (item.CursorPage, error) {
+			return item.CursorPage{}, item.ErrInvalidCursor
+		}}
+		response := performRequest(t, newRouter(service), http.MethodGet, "/api/v1/items?cursor=v1_bad", "")
+		assertAPIError(t, response, http.StatusBadRequest, "invalid_cursor", "invalid pagination cursor")
+	})
+	t.Run("missing capability", func(t *testing.T) {
+		t.Parallel()
+		response := performRequest(t, newRouter(&serviceStub{}), http.MethodGet, "/api/v1/items?cursor=v1_bad", "")
+		assertAPIError(t, response, http.StatusServiceUnavailable, "cursor_unavailable", "cursor pagination is temporarily unavailable")
+	})
+}
+
+func TestListCursorRejectsAmbiguousQueryBeforeService(t *testing.T) {
+	t.Parallel()
+	targets := []string{
+		"/api/v1/items?cursor=",
+		"/api/v1/items?cursor=one&cursor=two",
+		"/api/v1/items?cursor=one&offset=0",
+		"/api/v1/items?cursor=%zz",
+	}
+	for _, target := range targets {
+		target := target
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			service := &cursorServiceStub{serviceStub: &serviceStub{}, listCursor: func(context.Context, item.CursorRequest) (item.CursorPage, error) {
+				calls++
+				return item.CursorPage{}, nil
+			}}
+			response := performRequest(t, newRouter(service), http.MethodGet, target, "")
+			assertAPIError(t, response, http.StatusBadRequest, "bad_request", "invalid pagination parameters")
+			if calls != 0 {
+				t.Errorf("cursor service calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
 func TestListUsesDefaultLimitAndAlwaysReturnsAnArray(t *testing.T) {
 	t.Parallel()
 
@@ -629,6 +714,18 @@ type serviceStub struct {
 type idempotentServiceStub struct {
 	*serviceStub
 	createIdempotentFn func(context.Context, item.CreateInput, string) (item.Item, bool, error)
+}
+
+type cursorServiceStub struct {
+	*serviceStub
+	listCursor func(context.Context, item.CursorRequest) (item.CursorPage, error)
+}
+
+func (s *cursorServiceStub) ListCursor(ctx context.Context, request item.CursorRequest) (item.CursorPage, error) {
+	if s.listCursor == nil {
+		return item.CursorPage{}, errors.New("unexpected ListCursor call")
+	}
+	return s.listCursor(ctx, request)
 }
 
 func (s *idempotentServiceStub) CreateIdempotent(ctx context.Context, input item.CreateInput, key string) (item.Item, bool, error) {

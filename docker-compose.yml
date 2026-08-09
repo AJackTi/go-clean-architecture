@@ -71,6 +71,7 @@ services:
       RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-20}"
       RATE_LIMIT_MAX_CLIENTS: "${RATE_LIMIT_MAX_CLIENTS:-10000}"
       RATE_LIMIT_IDLE_TTL: "${RATE_LIMIT_IDLE_TTL:-10m}"
+      CURSOR_SIGNING_KEY: "${CURSOR_SIGNING_KEY:?CURSOR_SIGNING_KEY must be set (copy .env.example to .env)}"
     ports:
       - "127.0.0.1:${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
     depends_on:

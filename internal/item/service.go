@@ -9,10 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// Store is the persistence seam used by Service.  Implementations must honor
+// Store is the persistence seam used by Service. Implementations must honor
 // the supplied context and return list results in deterministic order:
-// CreatedAt descending, then ID descending.  List returns at most params.Limit
-// rows; Service requests one extra row to calculate Page.HasMore.
+// CreatedAt descending, then ID descending. List returns at most params.Limit
+// rows; Service requests one extra row to calculate Page.HasMore. Stores may
+// additionally implement CursorStore on the same concrete value to enable
+// keyset pagination.
 type Store interface {
 	Create(ctx context.Context, value Item) (Item, error)
 	Get(ctx context.Context, id uuid.UUID) (Item, error)
@@ -30,6 +32,18 @@ type Clock func() time.Time
 // Option configures a Service.  Options are intentionally small: adapters
 // should not be able to alter validation or pagination policy.
 type Option func(*Service)
+
+// WithCursorCodec enables the optional cursor-list capability. The codec is
+// deliberately injected at the application seam so HTTP adapters never need
+// to hold or parse a signing secret. A nil codec leaves cursor pagination
+// unavailable while preserving the legacy offset API.
+func WithCursorCodec(codec CursorCodec) Option {
+	return func(service *Service) {
+		if service != nil && codec != nil {
+			service.cursorCodec = codec
+		}
+	}
+}
 
 // WithIDGenerator overrides the UUID source used by Create.
 func WithIDGenerator(generator IDGenerator) Option {
@@ -52,9 +66,10 @@ func WithClock(clock Clock) Option {
 // Service owns Item use cases and domain policy.  It is safe for concurrent
 // use as long as its Store is safe for concurrent use (the memory adapter is).
 type Service struct {
-	store      Store
-	generateID IDGenerator
-	clock      Clock
+	store       Store
+	generateID  IDGenerator
+	clock       Clock
+	cursorCodec CursorCodec
 }
 
 // NewService constructs an Item service.  A nil Store is accepted so that
@@ -163,12 +178,29 @@ func (service *Service) List(ctx context.Context, params ListParams) (Page, erro
 	}
 	items := make([]Item, len(rows))
 	copy(items, rows)
-	return Page{
+	page := Page{
 		Items:   items,
 		Limit:   normalized.Limit,
 		Offset:  normalized.Offset,
 		HasMore: hasMore,
-	}, nil
+	}
+	// Emit a cursor alongside the legacy offset metadata when the same concrete
+	// store supports keyset reads. This gives existing clients a non-breaking
+	// migration path: request page one as before, then follow meta.next_cursor.
+	if hasMore && len(items) > 0 && service.cursorCodec != nil {
+		if _, cursorCapable := service.store.(CursorStore); cursorCapable {
+			position, positionErr := CursorPositionForItem(items[len(items)-1])
+			if positionErr != nil {
+				return Page{}, positionErr
+			}
+			next, encodeErr := service.cursorCodec.Encode(position)
+			if encodeErr != nil {
+				return Page{}, errors.Join(ErrCursorState, encodeErr)
+			}
+			page.NextCursor = next
+		}
+	}
+	return page, nil
 }
 
 func contextError(ctx context.Context) error {

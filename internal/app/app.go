@@ -51,6 +51,21 @@ func RunContext(ctx context.Context, cfg *config.Config) (runErr error) {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	var itemOptions []item.Option
+	cursorKey, err := cfg.CursorSigningKeyBytes()
+	if err != nil {
+		return fmt.Errorf("app: decode cursor signing key: %w", err)
+	}
+	if len(cursorKey) > 0 {
+		cursorCodec, codecErr := item.NewCursorCodec(
+			cursorKey,
+			item.WithCursorPurpose("items:list:created_at_desc_id_desc:v1"),
+		)
+		if codecErr != nil {
+			return fmt.Errorf("app: initialize cursor codec: %w", codecErr)
+		}
+		itemOptions = append(itemOptions, item.WithCursorCodec(cursorCodec))
+	}
 
 	tracing, err := telemetry.New(ctx, telemetry.Config{
 		Endpoint:    cfg.OTELExporterOTLPEndpoint,
@@ -86,7 +101,7 @@ func RunContext(ctx context.Context, cfg *config.Config) (runErr error) {
 		return fmt.Errorf("app: database readiness: %w", err)
 	}
 
-	service := item.NewService(itempostgres.NewStore(pool))
+	service := item.NewService(itempostgres.NewStore(pool), itemOptions...)
 	if cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}

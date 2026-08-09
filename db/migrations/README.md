@@ -32,3 +32,7 @@ Apply all migrations before enabling clients to send `Idempotency-Key`. The
 down migration for `0000002` removes replay metadata but deliberately does not
 remove Items; review the impact and use the guarded `migrate-down` workflow in
 an approved maintenance window.
+
+Cursor pagination does not add a migration: `0000001` already creates the
+`idx_items_created_at_id` index used by the composite keyset predicate. Keep
+that index aligned with any future change to the Item ordering contract.

@@ -115,6 +115,7 @@ Runtime configuration is environment-first and validated before the app starts:
 | `RATE_LIMIT_BURST` | `20` | Per-key burst capacity. |
 | `RATE_LIMIT_MAX_CLIENTS` | `10000` | Maximum resident limiter buckets. |
 | `RATE_LIMIT_IDLE_TTL` | `10m` | Idle bucket retention before cleanup. |
+| `CURSOR_SIGNING_KEY` | Empty outside Compose | 64-character hex HMAC key for signed cursor pagination; required in production. |
 
 Copy [`.env.example`](.env.example) for the complete local contract. Explicit
 HTTP collector URLs require `OTEL_EXPORTER_OTLP_INSECURE=true`; production
@@ -219,7 +220,18 @@ against the routes mounted by the HTTP adapter.
 | `GET` | `/api/healthz` | Readiness; returns `503` when PostgreSQL is unavailable |
 | `POST` | `/api/v1/items` | Create an item |
 | `GET` | `/api/v1/items/{id}` | Fetch an item by UUID (created IDs are UUIDv4) |
-| `GET` | `/api/v1/items?limit=20&offset=0` | Deterministic newest-first listing |
+| `GET` | `/api/v1/items?limit=20&offset=0` | Deterministic newest-first listing (legacy offset form) |
+
+The first list response can include `meta.next_cursor`. Use that opaque value
+for a stable keyset continuation:
+
+```sh
+curl --fail --get 'http://127.0.0.1:8080/api/v1/items?limit=20&cursor=<next_cursor>'
+```
+
+Never combine `cursor` and `offset`. Cursors are signed with
+`CURSOR_SIGNING_KEY`, are valid for 24 hours, and should be treated as
+untrusted transport tokens rather than credentials.
 
 Create an item:
 
@@ -256,9 +268,15 @@ provide the atomic capability, the keyed request returns sanitized `503`
 create. Raw keys, scopes, and fingerprints are hashed before persistence and
 are not included in logs or error bodies.
 
-Successful responses use a `data` envelope. List responses also include
-`meta.limit`, `meta.offset`, and `meta.has_more`. Names and descriptions are
-trimmed and validated by Unicode rune count. Unknown JSON fields, malformed
+Successful responses use a `data` envelope. List responses include
+`meta.limit` and `meta.has_more`; the legacy offset form includes `meta.offset`
+and may include a signed `meta.next_cursor`. Follow-up requests may send the
+opaque `cursor` query parameter instead of `offset`; the two parameters are
+mutually exclusive. Cursor pages use the immutable `(created_at,id)` keyset,
+so inserts newer than the boundary do not shift already-issued pages. The
+cursor is integrity-protected, expires after 24 hours, and contains no item
+payload, but it is not encrypted. Names and descriptions are trimmed and
+validated by Unicode rune count. Unknown JSON fields, malformed
 JSON, trailing JSON values, and bodies larger than 1 MiB are rejected.
 
 Errors use a stable shape and never expose provider details:
@@ -270,8 +288,9 @@ Errors use a stable shape and never expose provider details:
 Typical status mappings are `400` for malformed transport input, `422` for
 domain validation, `404` for a missing item, `409` for a conflict (including
 the idempotency conflict/in-progress outcomes), `500` for an unavailable
-internal dependency, and `503` when an explicitly requested idempotency store
-is unavailable.
+internal dependency, and `503` when an explicitly requested idempotency or
+cursor capability is unavailable. Forged or expired cursors use `400
+invalid_cursor`.
 
 Every response includes an `X-Request-ID` header. A valid single upstream
 value is preserved; missing, malformed, oversized, or duplicate values are

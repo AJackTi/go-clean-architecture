@@ -35,6 +35,8 @@ const (
 	defaultRateLimitBurst       = 20
 	defaultRateLimitMaxClients  = 10000
 	defaultRateLimitIdleTTL     = 10 * time.Minute
+	defaultCursorSigningKey     = ""
+	developmentCursorKey        = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 	maxOTELServiceNameBytes     = 128
 	maxOTELSamplerBytes         = 64
 	maxOTLPEndpointBytes        = 2048
@@ -43,6 +45,7 @@ const (
 	maxRateLimitBurst           = 100000
 	maxRateLimitMaxClients      = 1000000
 	maxRateLimitIdleTTL         = 24 * time.Hour
+	maxCursorSigningKeyBytes    = sha256.Size
 )
 
 // Config contains the runtime settings required by the HTTP application.
@@ -66,6 +69,7 @@ type Config struct {
 	RateLimitBurst             int
 	RateLimitMaxClients        int
 	RateLimitIdleTTL           time.Duration
+	CursorSigningKey           string
 }
 
 // NewConfig is kept as the conventional constructor name used by existing
@@ -91,6 +95,7 @@ func load(lookup func(string) (string, bool)) (*Config, error) {
 		"OTEL_TRACES_SAMPLER",
 		"AUTH_BEARER_TOKEN_SHA256",
 		"RATE_LIMIT_IDLE_TTL",
+		"CURSOR_SIGNING_KEY",
 	} {
 		if value, ok := lookup(key); ok {
 			if err := validateText(key, value); err != nil {
@@ -141,6 +146,11 @@ func load(lookup func(string) (string, bool)) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cursorSigningKey, cursorSigningKeySet := lookup("CURSOR_SIGNING_KEY")
+	if !cursorSigningKeySet {
+		cursorSigningKey = defaultCursorSigningKey
+	}
+	cursorSigningKey = strings.ToLower(strings.TrimSpace(cursorSigningKey))
 
 	cfg := &Config{
 		AppEnv:                     strings.TrimSpace(valueOrDefault(lookup, "APP_ENV", defaultAppEnv)),
@@ -160,10 +170,20 @@ func load(lookup func(string) (string, bool)) (*Config, error) {
 		RateLimitBurst:             rateLimitBurst,
 		RateLimitMaxClients:        rateLimitMaxClients,
 		RateLimitIdleTTL:           rateLimitIdleTTL,
+		CursorSigningKey:           cursorSigningKey,
 	}
 
 	if cfg.AppEnv == "production" && !databaseURLSet {
 		return nil, fmt.Errorf("config: DATABASE_URL must be explicitly set in production")
+	}
+	if cfg.AppEnv == "production" && !cursorSigningKeySet {
+		return nil, fmt.Errorf("config: CURSOR_SIGNING_KEY must be explicitly set in production")
+	}
+	if cfg.AppEnv == "production" && cfg.CursorSigningKey == developmentCursorKey {
+		return nil, fmt.Errorf("config: CURSOR_SIGNING_KEY must not use the development placeholder in production")
+	}
+	if cursorSigningKeySet && cfg.CursorSigningKey == "" {
+		return nil, fmt.Errorf("config: CURSOR_SIGNING_KEY must not be empty")
 	}
 	if _, set := lookup("OTEL_SERVICE_NAME"); set && cfg.OTELServiceName == "" {
 		return nil, fmt.Errorf("config: OTEL_SERVICE_NAME must not be empty")
@@ -260,6 +280,7 @@ func (c Config) Validate() error {
 		{name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: c.OTELExporterOTLPEndpoint},
 		{name: "OTEL_TRACES_SAMPLER", value: c.OTELTracesSampler},
 		{name: "AUTH_BEARER_TOKEN_SHA256", value: c.AuthBearerTokenSHA256},
+		{name: "CURSOR_SIGNING_KEY", value: c.CursorSigningKey},
 	}
 	for _, setting := range textSettings {
 		if err := validateText(setting.name, setting.value); err != nil {
@@ -282,6 +303,23 @@ func (c Config) Validate() error {
 		if _, err := hex.DecodeString(c.AuthBearerTokenSHA256); err != nil {
 			return fmt.Errorf("config: AUTH_BEARER_TOKEN_SHA256 must be hexadecimal")
 		}
+	}
+	cursorSigningKey := strings.TrimSpace(c.CursorSigningKey)
+	if cursorSigningKey != "" {
+		if len(cursorSigningKey) != maxCursorSigningKeyBytes*2 {
+			return fmt.Errorf("config: CURSOR_SIGNING_KEY must be a %d-character SHA-256 hex key", maxCursorSigningKeyBytes*2)
+		}
+		if _, err := hex.DecodeString(cursorSigningKey); err != nil {
+			return fmt.Errorf("config: CURSOR_SIGNING_KEY must be hexadecimal")
+		}
+		// Validate can be called directly on a Config literal, bypassing load's
+		// lowercase normalization. Compare canonically so casing/edge whitespace
+		// cannot bypass the production placeholder guard.
+		if strings.TrimSpace(c.AppEnv) == "production" && strings.EqualFold(cursorSigningKey, developmentCursorKey) {
+			return fmt.Errorf("config: CURSOR_SIGNING_KEY must not use the development placeholder in production")
+		}
+	} else if strings.TrimSpace(c.AppEnv) == "production" {
+		return fmt.Errorf("config: CURSOR_SIGNING_KEY must be set in production")
 	}
 
 	if strings.TrimSpace(c.DatabaseURL) == "" {
@@ -356,6 +394,21 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+// CursorSigningKeyBytes returns a defensive decoded copy for the composition
+// root. An empty development value means cursor pagination is not configured;
+// production validation rejects that state before this method is used.
+func (c Config) CursorSigningKeyBytes() ([]byte, error) {
+	value := strings.TrimSpace(c.CursorSigningKey)
+	if value == "" {
+		return nil, nil
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != maxCursorSigningKeyBytes {
+		return nil, fmt.Errorf("config: invalid CURSOR_SIGNING_KEY")
+	}
+	return append([]byte(nil), decoded...), nil
 }
 
 func validateText(name, value string) error {

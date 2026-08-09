@@ -16,7 +16,12 @@ and delivery workflow when adding a real domain feature.
 
 **Creation time**: A server-assigned UTC instant that is immutable for the lifetime of an Item.
 
-**Item page**: A deterministic newest-first collection containing Items, a normalized limit and offset, and a `has_more` flag.
+**Item page**: A deterministic newest-first collection containing Items, a
+normalized limit, optional legacy offset metadata, an optional signed cursor,
+and a `has_more` flag.
+
+**Cursor position**: The exclusive `(created_at,id)` boundary in the Item
+ordering. Cursor pages use this immutable keyset rather than an offset.
 
 **Idempotency key**: A client-supplied HTTP token used to retry one Item create
 without producing a second Item. The transport accepts 1–255 ASCII HTTP-token
@@ -49,6 +54,9 @@ successful completion.
 - An **Item** has exactly one **Item identity**, one **Name**, one **Description**, and one **Creation time**.
 - The Item module canonicalizes create input, assigns the **Item identity** and **Creation time**, and then writes the Item through its Store seam.
 - An **Item page** orders Items by `created_at DESC, id DESC`; the second key makes ties deterministic.
+- A cursor page applies a strict keyset predicate after its returned boundary;
+  the first offset-compatible response may advertise `meta.next_cursor` as a
+  migration path.
 - The HTTP adapter translates a request into the Item module's input and translates stable domain errors into transport responses; it does not own Item policy.
 - An idempotent create is one atomic persistence operation: the Item row and
   its replay record commit together, or neither commits. A replay returns the
@@ -65,6 +73,10 @@ successful completion.
 - Prometheus HTTP metrics are opt-in and use only bounded method, matched-route, and status labels; the disabled-by-default `/metrics` endpoint never exposes raw URLs or process/runtime collectors.
 - HTTP server spans extract W3C trace context and export over optional OTLP/HTTP. Empty exporter configuration performs no collector I/O, production requires TLS, and span attributes follow the same no-query/body/header/raw-path privacy boundary as access events.
 - Authentication and rate limiting are opt-in transport policies for `/api/v1`: the starter Bearer verifier compares a configured SHA-256 digest without retaining the secret, and the in-process token bucket has bounded keys and memory. These controls do not imply end-user authorization or trust forwarded client headers.
+- Cursor pagination is an optional capability on the same Item Store. Tokens
+  are versioned, HMAC-authenticated, URL-safe, bounded to 512 bytes, and expire
+  after 24 hours; `CURSOR_SIGNING_KEY` is supplied by the composition root and
+  must be shared by replicas.
 - Idempotency is opt-in per request through `Idempotency-Key`. Memory and
   PostgreSQL adapters implement the cohesive atomic seam; a service never
   combines an ordinary Item store with a separate idempotency backend. Raw
@@ -79,6 +91,9 @@ successful completion.
 - Callers cannot supply an Item identity or creation time in a create request.
 - Name and description are trimmed at the edges, while internal whitespace and valid Unicode are preserved.
 - A list request defaults to 20 Items and is capped at 100 Items. The Item module asks the Store for one look-ahead row to calculate `has_more`.
+- `cursor` and `offset` query parameters are mutually exclusive. Cursor pages
+  are not snapshots: newer inserts are excluded after a boundary and deletes
+  can shorten a later page.
 - Stores return deterministic newest-first ordering and honor cancellation from the supplied context.
 - Domain errors are matched with `errors.Is`/`errors.As`; HTTP clients receive stable error codes and sanitized messages rather than provider details.
 - Invalid create input or a failed atomic persistence attempt does not retain an
@@ -153,6 +168,8 @@ HTTP behaviour covered by adapter/integration tests.
 
 - **Item** is intentionally generic template language, not a claim about the eventual product domain. Rename it consistently when bootstrapping a project.
 - **Store** means the Item persistence interface, not necessarily a PostgreSQL database; the memory and PostgreSQL adapters are interchangeable implementations of that interface.
-- **Offset** pagination is deterministic but not snapshot-based: inserts between requests can move an Item between pages. A cursor contract must be designed explicitly before replacing it.
+- **Offset** pagination remains deterministic but is not snapshot-based: inserts
+  between requests can move an Item between pages. Cursor pagination is the
+  preferred deep-page contract, while preserving offset for compatibility.
 - **Creation time** is assigned once because no update use case exists today; future mutability must not silently change ordering semantics.
 - The code type is named `item.Service`, but in domain discussions it means the Item use-case module, not a generic catch-all service layer.

@@ -5,7 +5,9 @@
 package memory
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -18,6 +20,8 @@ import (
 var _ item.Store = (*Store)(nil)
 
 var _ item.IdempotentCreateStore = (*Store)(nil)
+
+var _ item.CursorStore = (*Store)(nil)
 
 // Store keeps independent value copies behind a mutex.  Item currently has
 // value-only fields; copying on reads also prevents future slice operations
@@ -157,6 +161,67 @@ func (store *Store) List(ctx context.Context, params item.ListParams) ([]item.It
 	}
 	page := make([]item.Item, count)
 	copy(page, values[params.Offset:params.Offset+count])
+	return page, nil
+}
+
+// ListAfter returns items strictly after the supplied keyset position in the
+// same newest-first ordering used by List. It is an optional capability on the
+// same Store, so cursor pagination cannot drift from the Item persistence
+// backend. The service asks for one look-ahead row; this adapter only enforces
+// the adapter-safe upper bound.
+func (store *Store) ListAfter(ctx context.Context, params item.CursorListParams) ([]item.Item, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	if store == nil {
+		return nil, item.ErrCursorUnavailable
+	}
+	if params.Limit < 0 || params.Limit > item.MaxPageSize+1 {
+		return nil, &item.ValidationError{Field: "limit", Reason: "is outside the supported range"}
+	}
+	if params.After != nil {
+		if err := params.After.Validate(); err != nil {
+			return nil, errors.Join(item.ErrCursorState, err)
+		}
+	}
+
+	store.mu.RLock()
+	values := make([]item.Item, 0, len(store.items))
+	for _, value := range store.items {
+		values = append(values, value)
+	}
+	store.mu.RUnlock()
+
+	sort.Slice(values, func(left, right int) bool {
+		if values[left].CreatedAt.Equal(values[right].CreatedAt) {
+			return bytes.Compare(values[left].ID[:], values[right].ID[:]) > 0
+		}
+		return values[left].CreatedAt.After(values[right].CreatedAt)
+	})
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+
+	start := 0
+	if params.After != nil {
+		start = len(values)
+		for index, value := range values {
+			if value.CreatedAt.Before(params.After.CreatedAt) ||
+				(value.CreatedAt.Equal(params.After.CreatedAt) && bytes.Compare(value.ID[:], params.After.ID[:]) < 0) {
+				start = index
+				break
+			}
+		}
+	}
+	if params.Limit == 0 || start >= len(values) {
+		return []item.Item{}, nil
+	}
+	count := params.Limit
+	if remaining := len(values) - start; count > remaining {
+		count = remaining
+	}
+	page := make([]item.Item, count)
+	copy(page, values[start:start+count])
 	return page, nil
 }
 

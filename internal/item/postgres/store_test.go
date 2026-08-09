@@ -108,6 +108,21 @@ func TestStoreIntegration(t *testing.T) {
 	if len(values) != 2 || values[0].ID != second.ID || values[1].ID != first.ID {
 		t.Fatalf("list order = %#v", values)
 	}
+	cursorValues, err := store.ListAfter(ctx, item.CursorListParams{Limit: 1})
+	if err != nil {
+		t.Fatalf("cursor first page: %v", err)
+	}
+	if len(cursorValues) != 1 || cursorValues[0].ID != second.ID {
+		t.Fatalf("cursor first page = %#v, want newest item", cursorValues)
+	}
+	after := item.CursorPosition{CreatedAt: cursorValues[0].CreatedAt, ID: cursorValues[0].ID}
+	cursorNext, err := store.ListAfter(ctx, item.CursorListParams{Limit: 2, After: &after})
+	if err != nil {
+		t.Fatalf("cursor after page: %v", err)
+	}
+	if len(cursorNext) != 1 || cursorNext[0].ID != first.ID {
+		t.Fatalf("cursor after page = %#v, want older item", cursorNext)
+	}
 
 	idempotentInput := item.CreateInput{Name: "idempotent", Description: "once"}
 	fingerprint, err := item.FingerprintCreateInput(idempotentInput)

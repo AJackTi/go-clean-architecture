@@ -131,7 +131,7 @@ func TestOpenAPIContractDocumentsStableResponses(t *testing.T) {
 		"get /api/health":        {"200"},
 		"get /api/healthz":       {"200", "503"},
 		"post /api/v1/items":     {"200", "201", "400", "401", "404", "409", "422", "429", "500", "503"},
-		"get /api/v1/items":      {"200", "400", "401", "429", "500"},
+		"get /api/v1/items":      {"200", "400", "401", "429", "500", "503"},
 		"get /api/v1/items/{id}": {"200", "400", "401", "404", "429", "500"},
 	}
 
@@ -180,12 +180,29 @@ func TestOpenAPIContractCapturesDomainAndTransportPolicy(t *testing.T) {
 	}
 
 	page := componentSchema(t, document, "PageMeta")
-	assertClosedObject(t, "PageMeta", page, "limit", "offset", "has_more")
+	assertClosedObject(t, "PageMeta", page, "limit", "has_more")
 	assertIntegerRange(t, "PageMeta.limit", page.Properties["limit"], 1, 100)
 	assertIntegerMinimum(t, "PageMeta.offset", page.Properties["offset"], 0)
+	if page.Properties["offset"].Ref != "" {
+		t.Errorf("PageMeta.offset should be an inline optional integer, got ref %q", page.Properties["offset"].Ref)
+	}
+	cursor := componentSchema(t, document, "Cursor")
+	assertStringPolicy(t, "Cursor", cursor, 4, 512)
+	if cursor.Pattern == "" {
+		t.Error("Cursor must document its versioned URL-safe pattern")
+	}
 
 	assertParameter(t, document, "Limit", "limit", "query", false, true, 0, 100, 20)
 	assertParameter(t, document, "Offset", "offset", "query", false, true, 0, -1, 0)
+	rawCursorParameter, exists := document.Components.Parameters["Cursor"]
+	if !exists {
+		t.Fatal("component parameter Cursor is missing")
+	}
+	var cursorParameter parameter
+	decodeJSON(t, rawCursorParameter, &cursorParameter)
+	if cursorParameter.Name != "cursor" || cursorParameter.In != "query" || cursorParameter.Required || cursorParameter.AllowEmptyValue || cursorParameter.Schema.Ref != "#/components/schemas/Cursor" {
+		t.Errorf("Cursor parameter = %#v, want optional query reference", cursorParameter)
+	}
 
 	for name, status := range map[string]string{
 		"LivenessResponse":             "ok",
@@ -201,7 +218,7 @@ func TestOpenAPIContractCapturesDomainAndTransportPolicy(t *testing.T) {
 
 	errorDetails := componentSchema(t, document, "ErrorDetails")
 	assertClosedObject(t, "ErrorDetails", errorDetails, "code", "message")
-	wantCodes := []string{"bad_request", "conflict", "idempotency_conflict", "idempotency_in_progress", "idempotency_unavailable", "internal_error", "not_found", "rate_limited", "unauthorized", "validation_error"}
+	wantCodes := []string{"bad_request", "conflict", "cursor_unavailable", "idempotency_conflict", "idempotency_in_progress", "idempotency_unavailable", "internal_error", "invalid_cursor", "not_found", "rate_limited", "unauthorized", "validation_error"}
 	gotCodes := append([]string(nil), errorDetails.Properties["code"].Enum...)
 	sort.Strings(gotCodes)
 	if strings.Join(gotCodes, ",") != strings.Join(wantCodes, ",") {
@@ -273,6 +290,29 @@ func TestOpenAPIContractDocumentsIdempotentCreate(t *testing.T) {
 	}
 	if _, ok := operationValue.Responses["503"]; !ok {
 		t.Fatal("POST /api/v1/items must document 503 idempotency_unavailable")
+	}
+}
+
+func TestOpenAPIContractDocumentsCursorPagination(t *testing.T) {
+	document, _ := loadOpenAPI(t)
+	rawOperation, exists := document.Paths["/api/v1/items"]["get"]
+	if !exists {
+		t.Fatal("GET /api/v1/items is missing")
+	}
+	var operationValue struct {
+		Parameters []json.RawMessage          `json:"parameters"`
+		Responses  map[string]json.RawMessage `json:"responses"`
+	}
+	decodeJSON(t, rawOperation, &operationValue)
+	if !hasReference(operationValue.Parameters, "#/components/parameters/Cursor") {
+		t.Fatal("GET /api/v1/items must reference the optional cursor parameter")
+	}
+	if _, ok := operationValue.Responses["503"]; !ok {
+		t.Fatal("GET /api/v1/items must document cursor_unavailable")
+	}
+	meta := componentSchema(t, document, "PageMeta")
+	if meta.Properties["next_cursor"].Ref != "#/components/schemas/Cursor" {
+		t.Errorf("PageMeta.next_cursor ref = %q, want Cursor", meta.Properties["next_cursor"].Ref)
 	}
 }
 

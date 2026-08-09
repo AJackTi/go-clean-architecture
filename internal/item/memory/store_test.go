@@ -94,6 +94,53 @@ func TestStoreListOrderPaginationAndEmptySlice(t *testing.T) {
 	}
 }
 
+func TestStoreListAfterUsesExclusiveKeysetBoundary(t *testing.T) {
+	store := NewStore()
+	ctx := context.Background()
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ids := []uuid.UUID{
+		uuid.MustParse("11111111-1111-4111-8111-111111111111"),
+		uuid.MustParse("22222222-2222-4222-8222-222222222222"),
+		uuid.MustParse("33333333-3333-4333-8333-333333333333"),
+	}
+	values := []item.Item{
+		{ID: ids[0], Name: "old", CreatedAt: base},
+		{ID: ids[1], Name: "newer", CreatedAt: base.Add(time.Hour)},
+		{ID: ids[2], Name: "same-time", CreatedAt: base},
+	}
+	for _, value := range values {
+		if _, err := store.Create(ctx, value); err != nil {
+			t.Fatalf("Create(%s) error = %v", value.Name, err)
+		}
+	}
+
+	first, err := store.ListAfter(ctx, item.CursorListParams{Limit: 2})
+	if err != nil {
+		t.Fatalf("first ListAfter() error = %v", err)
+	}
+	if len(first) != 2 || first[0].ID != ids[1] || first[1].ID != ids[2] {
+		t.Fatalf("first keyset page = %#v", first)
+	}
+	after := item.CursorPosition{CreatedAt: first[1].CreatedAt, ID: first[1].ID}
+	// Rows inserted ahead of the boundary after page one must not reappear on
+	// page two, including a same-timestamp UUID that sorts above the boundary.
+	for _, value := range []item.Item{
+		{ID: uuid.MustParse("44444444-4444-4444-8444-444444444444"), Name: "newest", CreatedAt: base.Add(2 * time.Hour)},
+		{ID: uuid.MustParse("55555555-5555-4555-8555-555555555555"), Name: "same-time-above", CreatedAt: base},
+	} {
+		if _, err := store.Create(ctx, value); err != nil {
+			t.Fatalf("insert after first page: %v", err)
+		}
+	}
+	second, err := store.ListAfter(ctx, item.CursorListParams{Limit: 2, After: &after})
+	if err != nil {
+		t.Fatalf("second ListAfter() error = %v", err)
+	}
+	if len(second) != 1 || second[0].ID != ids[0] {
+		t.Fatalf("second keyset page = %#v, want only older row", second)
+	}
+}
+
 func TestStoreContextCancellation(t *testing.T) {
 	store := NewStore()
 	ctx, cancel := context.WithCancel(context.Background())

@@ -198,10 +198,14 @@ paths:
       description: >-
         Returns a deterministic newest-first page ordered by
         `created_at DESC, id DESC`. The service requests one look-ahead row to
-        calculate `meta.has_more`. Offset pagination is not a snapshot.
+        calculate `meta.has_more`. Offset pagination remains supported for
+        compatibility; a response may provide `meta.next_cursor` for a signed
+        keyset continuation. `cursor` and `offset` are mutually exclusive, and
+        cursor pages are not snapshots.
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
           description: A page of items. `data` is always an array, including when empty.
@@ -221,13 +225,16 @@ paths:
                 meta:
                   limit: 20
                   offset: 0
-                  has_more: false
+                  has_more: true
+                  next_cursor: v1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
         '400':
           $ref: '#/components/responses/BadRequestPagination'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/CursorUnavailable'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -344,6 +351,17 @@ components:
         minimum: 0
         default: 0
       example: 0
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >-
+        Opaque signed keyset continuation returned in `meta.next_cursor`.
+        Send it instead of `offset`; duplicate, empty, oversized, malformed,
+        forged, or expired values are rejected. The token is valid for 24 hours
+        and is integrity-protected but not encrypted.
+      schema:
+        $ref: '#/components/schemas/Cursor'
   headers:
     RequestID:
       required: true
@@ -405,7 +423,30 @@ components:
               code: bad_request
               message: invalid item id
     BadRequestPagination:
-      description: A pagination query parameter is malformed or outside its allowed range.
+      description: >-
+        A pagination query parameter is malformed or outside its allowed range.
+        A syntactically valid but forged or expired cursor uses the
+        `invalid_cursor` code in the same 400 response.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            badRequest:
+              value:
+                error:
+                  code: bad_request
+                  message: invalid pagination parameters
+            invalidCursor:
+              value:
+                error:
+                  code: invalid_cursor
+                  message: invalid pagination cursor
+    CursorUnavailable:
+      description: The configured Item Store cannot provide cursor pagination.
       headers:
         X-Request-ID:
           $ref: '#/components/headers/RequestID'
@@ -415,8 +456,8 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             error:
-              code: bad_request
-              message: invalid pagination parameters
+              code: cursor_unavailable
+              message: cursor pagination is temporarily unavailable
     ValidationError:
       description: The Item violates a domain invariant.
       headers:
@@ -618,10 +659,23 @@ components:
             $ref: '#/components/schemas/Item'
         meta:
           $ref: '#/components/schemas/PageMeta'
+    Cursor:
+      type: string
+      minLength: 4
+      maxLength: 512
+      pattern: '^v1_[A-Za-z0-9_-]+$'
+      description: >-
+        Versioned URL-safe HMAC cursor. It contains an opaque ordering
+        boundary, is valid for 24 hours, and is never a credential or encrypted
+        representation of an Item.
     PageMeta:
       type: object
       additionalProperties: false
-      required: [limit, offset, has_more]
+      description: >-
+        Offset pages include `offset`; cursor pages omit it. A `next_cursor`
+        value is the exclusive continuation boundary and must be sent instead
+        of `offset`.
+      required: [limit, has_more]
       properties:
         limit:
           type: integer
@@ -633,10 +687,12 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Normalized zero-based offset.
+          description: Optional normalized zero-based offset for the legacy form.
         has_more:
           type: boolean
           description: Whether another item exists after this page.
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -651,7 +707,7 @@ components:
       properties:
         code:
           type: string
-          enum: [bad_request, validation_error, not_found, conflict, idempotency_conflict, idempotency_in_progress, idempotency_unavailable, unauthorized, rate_limited, internal_error]
+          enum: [bad_request, invalid_cursor, validation_error, not_found, conflict, idempotency_conflict, idempotency_in_progress, idempotency_unavailable, cursor_unavailable, unauthorized, rate_limited, internal_error]
           description: Stable machine-readable error code.
         message:
           type: string
