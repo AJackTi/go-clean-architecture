@@ -34,6 +34,6 @@ request ID and access event.
   malformed route spellings produce a regular 404 instead of bypassing
   observability through an automatic redirect.
 - The middleware remains transport-owned and has no persistence dependency.
-- Metrics and distributed tracing remain separate decisions because they need a
-  scrape/exporter contract, cardinality policy, and deployment-specific
-  credentials that this small template cannot safely assume.
+- Metrics and distributed tracing follow the separate, opt-in policy in
+  [ADR-0009](0009-opt-in-bounded-http-telemetry.md); this decision remains the
+  privacy boundary shared by all HTTP telemetry.

@@ -92,9 +92,38 @@ go run ./cmd/migrate up
 go run ./cmd/app
 ```
 
-The app reads `APP_ENV`, `HTTP_PORT`, `LOG_LEVEL`, and `DATABASE_URL` from the
-environment. Development defaults are documented in [`.env.example`](.env.example);
-production requires an explicit `DATABASE_URL`.
+Runtime configuration is environment-first and validated before the app starts:
+
+| Variable | Development default | Purpose |
+| --- | --- | --- |
+| `APP_ENV` | `development` | Runtime environment; `production` enables production safeguards. |
+| `HTTP_PORT` | `8080` | HTTP listen port (`1`–`65535`). |
+| `LOG_LEVEL` | `info` | Structured log verbosity. |
+| `DATABASE_URL` | Local PostgreSQL URL | Database connection; it must be set explicitly in production. |
+| `METRICS_ENABLED` | `false` | Exposes Prometheus metrics at `/metrics` when enabled. |
+| `OTEL_SERVICE_NAME` | `github.com/AJackTi/go-clean-architecture` | OpenTelemetry `service.name`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Empty | OTLP/HTTP collector URL; an empty value disables trace export. |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `false` | Allows plaintext OTLP/HTTP outside production only. |
+| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | Supported parent-based trace sampler. |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | Root-span sampling ratio from `0` to `1`. |
+
+Copy [`.env.example`](.env.example) for the complete local contract. Explicit
+HTTP collector URLs require `OTEL_EXPORTER_OTLP_INSECURE=true`; production
+rejects plaintext telemetry and requires HTTPS.
+
+When `METRICS_ENABLED=true`, the app mounts a Prometheus scrape handler at
+`/metrics`. The isolated registry exposes HTTP request count, duration, and
+in-flight gauges using method, matched route pattern, and bounded status labels.
+It deliberately omits Go/process collectors and never uses raw URLs. Keep the
+scrape endpoint behind deployment-level network controls; it is disabled by
+default.
+
+HTTP tracing accepts W3C `traceparent`, creates server spans with matched route
+patterns, and correlates access events through `trace_id`, `span_id`, and
+`request_id`. An empty OTLP endpoint creates no exporter and performs no
+collector I/O. Exported spans exclude queries, bodies, request headers, client
+addresses, and raw unmatched paths. Shutdown flushes the batch exporter within
+a bounded deadline.
 
 ## Development workflow
 
@@ -209,6 +238,8 @@ spellings still receive an ID and access event.
 | [`internal/controller/http`](internal/controller/http) | Router and operational endpoints |
 | [`pkg/httpserver`](pkg/httpserver) | Reusable server lifecycle module |
 | [`pkg/logger`](pkg/logger) | Process logging seam |
+| [`pkg/metrics`](pkg/metrics) | Isolated, bounded Prometheus HTTP metrics |
+| [`pkg/telemetry`](pkg/telemetry) | Optional OTLP/HTTP tracing provider |
 | [`db/migrations`](db/migrations) | Versioned PostgreSQL schema changes |
 | [`scripts/template-smoke.sh`](scripts/template-smoke.sh) | Verify a clean generated repository end to end |
 | [`.github`](.github) | CI, dependency updates, and contribution workflow |
@@ -270,6 +301,7 @@ tagging a version.
 - [Architecture context](CONTEXT.md)
 - [Architecture decisions](docs/adr/)
 - [OpenAPI 3.1 contract](docs/openapi.yaml)
+- [HTTP observability guide](docs/observability.md)
 - [Downstream template smoke test](docs/template-smoke.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)

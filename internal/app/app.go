@@ -17,11 +17,17 @@ import (
 	itempostgres "github.com/AJackTi/go-clean-architecture/internal/item/postgres"
 	"github.com/AJackTi/go-clean-architecture/pkg/httpserver"
 	"github.com/AJackTi/go-clean-architecture/pkg/logger"
+	"github.com/AJackTi/go-clean-architecture/pkg/metrics"
+	"github.com/AJackTi/go-clean-architecture/pkg/telemetry"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/propagation"
 )
 
-const databaseStartupTimeout = 10 * time.Second
+const (
+	databaseStartupTimeout   = 10 * time.Second
+	telemetryShutdownTimeout = 5 * time.Second
+)
 
 // Run installs signal handling and runs the application until it is stopped.
 func Run(cfg *config.Config) error {
@@ -33,7 +39,7 @@ func Run(cfg *config.Config) error {
 // RunContext is the lifecycle entry point used by main and by integration
 // tests. It fails fast when the database is unavailable, then performs a
 // bounded graceful HTTP shutdown when the context is cancelled.
-func RunContext(ctx context.Context, cfg *config.Config) error {
+func RunContext(ctx context.Context, cfg *config.Config) (runErr error) {
 	if ctx == nil {
 		return errors.New("app: nil context")
 	}
@@ -43,6 +49,29 @@ func RunContext(ctx context.Context, cfg *config.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+
+	tracing, err := telemetry.New(ctx, telemetry.Config{
+		Endpoint:    cfg.OTELExporterOTLPEndpoint,
+		Insecure:    cfg.OTELExporterOTLPInsecure,
+		ServiceName: cfg.OTELServiceName,
+		Environment: cfg.AppEnv,
+		SampleRatio: cfg.OTELTracesSamplerArg,
+	})
+	if err != nil {
+		return fmt.Errorf("app: initialize telemetry: %w", err)
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		if shutdownErr := tracing.Shutdown(shutdownContext); shutdownErr != nil {
+			telemetryErr := fmt.Errorf("app: shutdown telemetry: %w", shutdownErr)
+			if runErr == nil {
+				runErr = telemetryErr
+				return
+			}
+			runErr = errors.Join(runErr, telemetryErr)
+		}
+	}()
 
 	databaseContext, cancel := context.WithTimeout(ctx, databaseStartupTimeout)
 	defer cancel()
@@ -59,7 +88,19 @@ func RunContext(ctx context.Context, cfg *config.Config) error {
 	if cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	handler := httpcontroller.NewRouter(service, pool.Ping)
+	var httpMetrics *metrics.Metrics
+	if cfg.MetricsEnabled {
+		httpMetrics = metrics.New()
+	}
+	handler := httpcontroller.NewRouter(
+		service,
+		pool.Ping,
+		httpcontroller.WithMetrics(httpMetrics),
+		httpcontroller.WithTracing(
+			tracing.Tracer(httpcontroller.InstrumentationName),
+			propagation.TraceContext{},
+		),
+	)
 	server := httpserver.New(
 		handler,
 		httpserver.Port(cfg.HTTPPort),

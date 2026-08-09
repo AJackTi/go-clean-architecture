@@ -43,6 +43,8 @@ and delivery workflow when adding a real domain feature.
 - Every HTTP response carries an `X-Request-ID`; one valid upstream token is preserved and all other values are replaced with a UUIDv4.
 - The HTTP composition module emits one structured access event after each request through the process logger. It records request ID, method, route pattern, status, response bytes, and duration, but never query strings, bodies, or raw unmatched paths.
 - Handler panics return the stable internal-error envelope without panic values or request metadata; automatic trailing-slash and fixed-path redirects are disabled so route-shape errors remain observable.
+- Prometheus HTTP metrics are opt-in and use only bounded method, matched-route, and status labels; the disabled-by-default `/metrics` endpoint never exposes raw URLs or process/runtime collectors.
+- HTTP server spans extract W3C trace context and export over optional OTLP/HTTP. Empty exporter configuration performs no collector I/O, production requires TLS, and span attributes follow the same no-query/body/header/raw-path privacy boundary as access events.
 - The checked-in OpenAPI 3.1 document describes the same route set and response contract; `go test ./docs` fails when the document and mounted routes drift.
 
 ## Invariants and policies
@@ -66,6 +68,7 @@ and delivery workflow when adding a real domain feature.
 | HTTP adapter | `internal/item/httpapi` | Decode strict JSON, parse paths/queries, enforce body limits, and map errors/statuses. |
 | HTTP composition | `internal/controller/http` | Mount health endpoints and versioned routes, assign request IDs, and emit structured access events. |
 | Runtime modules | `pkg/httpserver`, `pkg/logger` | Provide explicit HTTP lifecycle and process-wide structured logging seams. |
+| Telemetry modules | `pkg/metrics`, `pkg/telemetry` | Own an isolated Prometheus registry and an optional OTLP/HTTP tracing provider with bounded lifecycle. |
 | Commands | `cmd/app`, `cmd/bootstrap`, `cmd/migrate`, `cmd/healthcheck` | Customize a clean checkout, start the app, apply migrations, and probe readiness in the minimal runtime image. |
 | Schema | `db/migrations` | Versioned PostgreSQL schema changes with paired up/down files. |
 | Contract documentation | `docs/openapi.yaml`, `docs/openapi_test.go` | Publish and verify the machine-readable HTTP interface. |

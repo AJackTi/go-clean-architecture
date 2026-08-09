@@ -7,12 +7,16 @@ import (
 	"time"
 
 	"github.com/AJackTi/go-clean-architecture/internal/item/httpapi"
+	"github.com/AJackTi/go-clean-architecture/pkg/metrics"
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
 	livenessPath     = "/api/health"
 	readinessPath    = "/api/healthz"
+	metricsPath      = "/metrics"
 	readinessTimeout = 2 * time.Second
 )
 
@@ -21,12 +25,61 @@ const (
 // cancel an in-flight check.
 type ReadinessCheck func(context.Context) error
 
-// NewRouter wires middleware, operational endpoints, and the versioned API.
-func NewRouter(items httpapi.Service, readiness ReadinessCheck) *gin.Engine {
-	return newRouter(items, readiness, processAccessLogger{})
+type routerConfig struct {
+	accessLog  accessLogger
+	metrics    *metrics.Metrics
+	tracer     trace.Tracer
+	propagator propagation.TextMapPropagator
 }
 
-func newRouter(items httpapi.Service, readiness ReadinessCheck, accessLog accessLogger) *gin.Engine {
+// RouterOption configures optional transport-owned diagnostics without
+// changing the Item service boundary.
+type RouterOption func(*routerConfig)
+
+// WithMetrics enables the Prometheus scrape endpoint and HTTP server metrics.
+// A nil Metrics value leaves the endpoint disabled.
+func WithMetrics(value *metrics.Metrics) RouterOption {
+	return func(config *routerConfig) {
+		if config != nil {
+			config.metrics = value
+		}
+	}
+}
+
+// WithTracing enables W3C trace-context extraction and server spans. A nil
+// tracer leaves tracing disabled. A nil propagator uses TraceContext only.
+func WithTracing(tracer trace.Tracer, propagator propagation.TextMapPropagator) RouterOption {
+	return func(config *routerConfig) {
+		if config == nil {
+			return
+		}
+		config.tracer = tracer
+		config.propagator = propagator
+	}
+}
+
+// NewRouter wires middleware, operational endpoints, and the versioned API.
+func NewRouter(items httpapi.Service, readiness ReadinessCheck, options ...RouterOption) *gin.Engine {
+	config := routerConfig{accessLog: processAccessLogger{}}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+	return buildRouter(items, readiness, config)
+}
+
+func newRouter(items httpapi.Service, readiness ReadinessCheck, accessLog accessLogger, options ...RouterOption) *gin.Engine {
+	config := routerConfig{accessLog: accessLog}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+	return buildRouter(items, readiness, config)
+}
+
+func buildRouter(items httpapi.Service, readiness ReadinessCheck, config routerConfig) *gin.Engine {
 	router := gin.New()
 	// Route-shape errors should pass through the same middleware as every
 	// other response. Gin's automatic trailing-slash/fixed-path redirects run
@@ -34,7 +87,15 @@ func newRouter(items httpapi.Service, readiness ReadinessCheck, accessLog access
 	// access event.
 	router.RedirectTrailingSlash = false
 	router.RedirectFixedPath = false
-	router.Use(observabilityMiddleware(accessLog), sanitizedRecovery())
+	middleware := []gin.HandlerFunc{observabilityMiddleware(config.accessLog)}
+	if config.tracer != nil {
+		middleware = append(middleware, tracingMiddleware(config.tracer, config.propagator))
+	}
+	if config.metrics != nil {
+		middleware = append(middleware, metricsMiddleware(config.metrics))
+	}
+	middleware = append(middleware, sanitizedRecovery())
+	router.Use(middleware...)
 	_ = router.SetTrustedProxies(nil)
 
 	router.GET(livenessPath, func(c *gin.Context) {
@@ -49,6 +110,9 @@ func newRouter(items httpapi.Service, readiness ReadinessCheck, accessLog access
 		}
 		c.JSON(nethttp.StatusOK, healthResponse{Status: "ok"})
 	})
+	if config.metrics != nil {
+		router.GET(metricsPath, gin.WrapH(config.metrics.Handler()))
+	}
 
 	httpapi.New(items).RegisterRoutes(router.Group("/api/v1"))
 	return router

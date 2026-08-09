@@ -9,6 +9,7 @@ import (
 	"github.com/AJackTi/go-clean-architecture/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -17,6 +18,7 @@ const (
 	maxRequestIDBytes = 128
 	requestLogMessage = "http request completed"
 	defaultRouteName  = "unmatched"
+	requestIDKey      = "go-clean-architecture.request-id"
 )
 
 type recoveryResponse struct {
@@ -83,6 +85,7 @@ func observabilityMiddleware(accessLog accessLogger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
 		requestID := requestIDFor(c)
+		c.Set(requestIDKey, requestID)
 		c.Header(requestIDHeader, requestID)
 
 		c.Next()
@@ -111,6 +114,15 @@ func observabilityMiddleware(accessLog accessLogger) gin.HandlerFunc {
 			zap.Int("bytes", responseBytes),
 			zap.Duration("duration", time.Since(started)),
 		}
+		if c.Request != nil {
+			spanContext := trace.SpanContextFromContext(c.Request.Context())
+			if spanContext.IsValid() {
+				fields = append(fields,
+					zap.String("trace_id", spanContext.TraceID().String()),
+					zap.String("span_id", spanContext.SpanID().String()),
+				)
+			}
+		}
 
 		switch {
 		case status >= http.StatusInternalServerError:
@@ -121,6 +133,18 @@ func observabilityMiddleware(accessLog accessLogger) gin.HandlerFunc {
 			accessLog.Info(requestLogMessage, fields...)
 		}
 	}
+}
+
+func requestIDFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, exists := c.Get(requestIDKey)
+	if !exists {
+		return ""
+	}
+	requestID, _ := value.(string)
+	return requestID
 }
 
 func requestIDFor(c *gin.Context) string {

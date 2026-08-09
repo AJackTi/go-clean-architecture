@@ -58,6 +58,12 @@ services:
       HTTP_PORT: "${HTTP_PORT:-8080}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set (copy .env.example to .env)}"
+      METRICS_ENABLED: "${METRICS_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-github.com/AJackTi/go-clean-architecture}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_INSECURE: "${OTEL_EXPORTER_OTLP_INSECURE:-false}"
+      OTEL_TRACES_SAMPLER: "${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}"
+      OTEL_TRACES_SAMPLER_ARG: "${OTEL_TRACES_SAMPLER_ARG:-0.1}"
     ports:
       - "127.0.0.1:${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
     depends_on:

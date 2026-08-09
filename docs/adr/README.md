@@ -16,6 +16,7 @@ distinguish intentional constraints from accidental code shape.
 | [0006](0006-environment-first-config-and-explicit-http-lifecycle.md) | Use environment-first configuration and an explicit HTTP lifecycle | Accepted |
 | [0007](0007-request-ids-and-structured-access-events.md) | Assign request IDs and emit structured access events | Accepted |
 | [0008](0008-openapi-contract-and-route-drift-check.md) | Keep a checked-in OpenAPI contract beside the HTTP adapter | Accepted |
+| [0009](0009-opt-in-bounded-http-telemetry.md) | Use opt-in bounded HTTP metrics and tracing | Accepted |
 
 ## Adding a decision
 
