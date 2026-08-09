@@ -1,0 +1,51 @@
+name: Question or support request
+description: Ask how to use or customize the template
+title: "question: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please keep questions focused on the reusable template. For security
+        concerns, follow `SECURITY.md` and do not post sensitive details here.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I read the README and SUPPORT guide and searched existing issues.
+          required: true
+        - label: I have removed credentials, tokens, and personal data from this request.
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What would you like to know?
+      description: State one concrete question or goal.
+      placeholder: How can I ...?
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include commands, relevant code, and the result. Redact sensitive values.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the commit or tag, Go version, OS/architecture, and Docker/Compose/database versions when relevant.
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add links or other details that help maintainers answer efficiently.

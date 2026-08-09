@@ -201,7 +201,11 @@ jobs:
         run: docker compose --env-file .env.example config --quiet
 
       - name: Build image
-        run: docker build --pull --tag clean-architecture:ci .
+        run: >-
+          docker build --pull
+          --build-arg VCS_REF="${GITHUB_SHA}"
+          --build-arg VERSION="ci-${GITHUB_SHA::12}"
+          --tag clean-architecture:ci .
 
       - name: Assert non-root image
         shell: bash

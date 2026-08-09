@@ -1,1 +1,7 @@
-* @peihsendoyle @Lan-Phan
+# Reviewers for every file in the repository.
+# Keep this list limited to maintainers who have write access.
+* @AJackTi
+
+# Changes to automation and repository governance should always include the
+# maintainers who own the repository configuration.
+/.github/ @AJackTi

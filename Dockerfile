@@ -25,6 +25,7 @@ RUN set -eux; \
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6 AS runtime
 
 ARG VCS_REF=unknown
+ARG VERSION=dev
 
 WORKDIR /app
 COPY --from=build /out/app /app/app
@@ -38,7 +39,9 @@ ENV GIN_MODE=release
 LABEL org.opencontainers.image.title="go-clean-architecture" \
 	org.opencontainers.image.description="A production-ready Go clean architecture template" \
 	org.opencontainers.image.source="https://github.com/AJackTi/go-clean-architecture" \
-	org.opencontainers.image.revision="${VCS_REF}"
+	org.opencontainers.image.revision="${VCS_REF}" \
+	org.opencontainers.image.version="${VERSION}" \
+	org.opencontainers.image.licenses="MIT"
 
 EXPOSE 8080
 STOPSIGNAL SIGTERM

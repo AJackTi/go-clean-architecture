@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose an improvement to the template
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is a reusable template. Explain how the proposal helps
+        teams starting a new service, not only one downstream application.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I have considered how this affects the template's defaults and upgrade path.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What use case or pain point does this address? Include who benefits.
+      placeholder: As a maintainer or template user, I need ... because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, API, workflow, or documentation you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches or workarounds did you evaluate?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which part of the template would this change primarily affect?
+      options:
+        - Application code
+        - Developer workflow
+        - Documentation
+        - CI/CD or security
+        - Container or deployment setup
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add examples, links, screenshots, or a draft implementation.

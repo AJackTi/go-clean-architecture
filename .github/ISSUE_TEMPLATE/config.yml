@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/AJackTi/go-clean-architecture/security/policy
+    about: Read the security policy and use GitHub's private reporting flow; never disclose a vulnerability in a public issue.
+  - name: Read the support guide
+    url: https://github.com/AJackTi/go-clean-architecture/blob/main/SUPPORT.md
+    about: Find troubleshooting steps and choose the right channel before opening an issue.
