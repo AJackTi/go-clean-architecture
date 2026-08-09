@@ -1,41 +1,89 @@
-version: "3.9"
+name: ${COMPOSE_PROJECT_NAME:-go-clean-architecture}
+
 services:
   postgres:
-    container_name: postgres
-    image: postgres:14.4-alpine
-    volumes:
-      - pg-data:/var/lib/postgresql/data
+    image: postgres:16-alpine@sha256:97ff59a4e30e08d1c11bdcd9455e7832368c0572b576c9092cde2df4ae5552a3
     environment:
-      POSTGRES_USER: "user"
-      POSTGRES_PASSWORD: "pass"
-      POSTGRES_DB: "architecture"
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB must be set (copy .env.example to .env)}"
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER must be set (copy .env.example to .env)}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (copy .env.example to .env)}"
     ports:
-      - 5432:5432
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" && psql -v ON_ERROR_STOP=1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -c 'SELECT 1' >/dev/null",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    image: "${APP_IMAGE:-go-clean-architecture:local}"
+    entrypoint: ["/app/migrate"]
+    command: ["up"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set (copy .env.example to .env)}"
+      MIGRATIONS_PATH: file:///app/db/migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   app:
-    build: .
-    container_name: app
-    image: app
-    environment:
-      PG_DB_NAME: "architecture"
-      PG_HOST: "postgres"
-      PG_PORT: "5432"
-      PG_USER: "user"
-      PG_PASSWORD: "pass"
-      PG_SSLMODE: "disable"
-    ports:
-      - 8080:8080
-    depends_on:
-      - postgres
-
-  integration:
+    image: "${APP_IMAGE:-go-clean-architecture:local}"
     build:
       context: .
-      dockerfile: integration-test/Dockerfile
-    container_name: integration
-    image: integration
+      target: runtime
+    environment:
+      APP_ENV: "${APP_ENV:-development}"
+      HTTP_PORT: "${HTTP_PORT:-8080}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set (copy .env.example to .env)}"
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
     depends_on:
-      - app
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
-  pg-data:
+  postgres-data:

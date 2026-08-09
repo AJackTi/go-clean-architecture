@@ -3,9 +3,12 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
+# All jobs are read-only by default. Jobs that need additional permissions
+# should declare them locally and narrowly.
 permissions:
   contents: read
 
@@ -14,27 +17,39 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.26.5"
-  GOFLAGS: "-mod=readonly"
-  CGO_ENABLED: "0"
+  # The toolchain directive in go.mod is the single source of truth for Go.
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: auto
 
 jobs:
   quality:
     name: Go quality
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Check formatting
-        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(git ls-files -z '*.go' | xargs -0 -r gofmt -l)"
+          if [[ -n "${unformatted}" ]]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "${unformatted}"
+            exit 1
+          fi
 
       - name: Check module files
         run: |
@@ -44,22 +59,169 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test -race -covermode=atomic ./...
+      - name: Test with race detector
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -covermode=atomic ./...
 
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+      - name: GolangCI-Lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_dir="${RUNNER_TEMP}/go-bin"
+          mkdir -p "${tool_dir}"
+          GOTOOLCHAIN="$(go env GOVERSION)" GOFLAGS= GOBIN="${tool_dir}" \
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          "${tool_dir}/golangci-lint" run --timeout=5m ./...
 
-      - name: Lint
-        run: "$(go env GOPATH)/bin/golangci-lint run --timeout=5m ./..."
-
-  container:
-    name: Container build
+  integration:
+    name: PostgreSQL integration
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TEST_DATABASE_URL: postgres://app:app@localhost:5432/app?sslmode=disable
+      DATABASE_URL: postgres://app:app@localhost:5432/app?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:97ff59a4e30e08d1c11bdcd9455e7832368c0572b576c9092cde2df4ae5552a3
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d app && psql -v ON_ERROR_STOP=1 -U app -d app -c 'SELECT 1' >/dev/null"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Apply migrations
+        run: go run ./cmd/migrate up
+
+      - name: Run PostgreSQL integration tests
+        run: go test -race -count=1 ./internal/item/postgres
+
+  build:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Linux binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            for command in app healthcheck migrate; do
+              CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+                go build -trimpath -buildvcs=false -ldflags='-s -w' \
+                -o "dist/${command}-linux-${arch}" "./cmd/${command}"
+            done
+          done
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binaries-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  dependency-security:
+    name: Go vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run govulncheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_dir="${RUNNER_TEMP}/go-bin"
+          mkdir -p "${tool_dir}"
+          GOTOOLCHAIN="$(go env GOVERSION)" GOFLAGS= GOBIN="${tool_dir}" \
+            go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          "${tool_dir}/govulncheck" ./...
+
+  container:
+    name: Docker build and scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check Dockerfile syntax
+        run: docker build --check .
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config --quiet
 
       - name: Build image
-        run: docker build --tag clean-architecture:ci .
+        run: docker build --pull --tag clean-architecture:ci .
+
+      - name: Assert non-root image
+        shell: bash
+        run: |
+          set -euo pipefail
+          user="$(docker image inspect --format '{{.Config.User}}' clean-architecture:ci)"
+          case "${user}" in
+            ""|root|0|0:0)
+              echo "Docker image must run as a non-root user (got ${user:-empty})."
+              exit 1
+              ;;
+          esac
+
+      - name: Scan image with Trivy
+        # aquasec/trivy:0.73.0, pinned by its multi-platform image digest.
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v "${RUNNER_TEMP}/trivy-cache:/root/.cache/"
+          aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+          image --db-repository ghcr.io/aquasecurity/trivy-db:2
+          --scanners vuln --ignore-unfixed --severity HIGH,CRITICAL
+          --exit-code 1 --no-progress clean-architecture:ci

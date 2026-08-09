@@ -14,7 +14,10 @@ func main() {
 		log.Fatalf("load configuration: %v", err)
 	}
 
-	logger.Init(cfg.LogLevel)
+	if err := logger.Init(cfg.LogLevel); err != nil {
+		log.Fatalf("initialize logger: %v", err)
+	}
+	defer func() { _ = logger.Sync() }()
 	if err := app.Run(cfg); err != nil {
 		log.Fatalf("run application: %v", err)
 	}

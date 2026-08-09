@@ -1,34 +1,36 @@
-Go-Clean-Architecture
+# Go Clean Architecture
 
-# Prerequisites
+A small Go HTTP service template with PostgreSQL, explicit migrations, and a
+container-first development workflow.
 
-Need to install these tools first:
+## Prerequisites
 
-1. Docker and docker-compose
-2. Go 1.26.5+
-3. Golang-migrate tool `brew install golang-migrate`
-4. Golangci-lint tool `brew install golangci-lint`
-5. Hadolint tool `brew install hadolint`
-6. dotenv-linter tool `brew install dotenv-linter`
-7. (optional) If you're using Colima instead of Docker Desktop, you need to export `DOCKER_HOST` in order to run test from _usecase_ package
+- Docker with the Compose v2 plugin (`docker compose`)
+- Go 1.26.5 when running checks or binaries directly on the host
+- golangci-lint v2.12.2 or newer for `make lint`
 
-# How to run
+## Quick start
 
-- Copy .env.example to .env
-- Run `make run `
+```sh
+cp .env.example .env
+make compose-up
+curl http://127.0.0.1:8080/api/healthz
+curl http://127.0.0.1:8080/api/v1/items
+```
 
-# How to run test
+`compose-up` builds the non-root application image, waits for PostgreSQL,
+applies pending migrations as a one-shot job, and then starts the API. Ports
+are bound to localhost only. Follow logs with `make logs` and stop the stack
+with `make compose-down`; the database volume is preserved.
 
-- Test 1 user claims multiple times concurrently
-  `go test -v ./internal/usecase/.`
+## Development checks
 
-- Test multiple user claims at the same time
-  `go test -v ./internal/entity/.`
+```sh
+make help
+make test
+make test-race
+make check
+```
 
-# Problems need to solve
-
-# Current file size after build
-
-We need to track and check how we can reduce this size
-
-# Deployment diagram
+Use `make migrate-version` to inspect migration state. Destructive rollback is
+guarded and requires `make migrate-down CONFIRM=1`.

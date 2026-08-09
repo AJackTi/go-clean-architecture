@@ -7,7 +7,7 @@
 coverage
 *.out
 *.log
-bin
+bin/
 tmp
 docs
 resource

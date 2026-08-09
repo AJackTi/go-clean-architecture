@@ -89,3 +89,34 @@ func TestConfigValidateAcceptsBoundaryPorts(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadRequiresExplicitProductionDatabaseURL(t *testing.T) {
+	lookup := func(key string) (string, bool) {
+		if key == "APP_ENV" {
+			return "production", true
+		}
+		return "", false
+	}
+	if _, err := load(lookup); err == nil {
+		t.Fatal("production config without DATABASE_URL succeeded")
+	}
+}
+
+func TestLoadNormalizesWhitespace(t *testing.T) {
+	values := map[string]string{
+		"APP_ENV":      " test ",
+		"HTTP_PORT":    " 18080 ",
+		"LOG_LEVEL":    " info ",
+		"DATABASE_URL": " postgres://localhost/test ",
+	}
+	cfg, err := load(func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.AppEnv != "test" || cfg.HTTPPort != "18080" || cfg.LogLevel != "info" || cfg.DatabaseURL != "postgres://localhost/test" {
+		t.Fatalf("config was not normalized: %#v", cfg)
+	}
+}

@@ -1,70 +1,105 @@
-ifneq (,$(wildcard ./.env))
-    include .env
-    export
-endif
+SHELL := /bin/sh
 
-# HELP =================================================================================================================
-# This will output the help for each task
-# thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
-.PHONY: help
+.DEFAULT_GOAL := help
 
-help: ## Display this help screen
-	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+GO ?= go
+COMPOSE ?= docker compose
+ENV_FILE ?= .env
+BIN_DIR ?= bin
+APP_BINARY ?= $(BIN_DIR)/app
+MIGRATE_BINARY ?= $(BIN_DIR)/migrate
+HEALTHCHECK_BINARY ?= $(BIN_DIR)/healthcheck
+GOLANGCI_LINT ?= golangci-lint
+GOVULNCHECK_VERSION ?= v1.6.0
 
-compose-up: ### Run docker-compose
-	docker-compose up --build -d postgres && docker-compose logs -f
-.PHONY: compose-up
+.PHONY: help env-check fmt fmt-check tidy-check verify vet test test-race lint vuln build check \
+	compose-config compose-build compose-up compose-down compose-logs logs migrate migrate-up \
+	migrate-down migrate-version migrate-step
 
-compose-up-integration-test: ### Run docker-compose with integration test
-	docker-compose up --build --abort-on-container-exit --exit-code-from integration
-.PHONY: compose-up-integration-test
+help: ## Show available targets
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-compose-down: ### Down docker-compose
-	docker-compose down --remove-orphans
-.PHONY: compose-down
+env-check: ## Check that the Compose environment file exists
+	@test -f "$(ENV_FILE)" || { \
+		echo "Missing $(ENV_FILE). Copy .env.example to $(ENV_FILE) first." >&2; \
+		exit 1; \
+	}
 
-swag-v1: ### swag init
-	swag init -g internal/controller/http/router.go
-.PHONY: swag-v1
+fmt: ## Format all Go packages
+	$(GO) fmt ./...
 
-run: swag-v1 ### swag run
-	go mod tidy && go mod download && \
-	DISABLE_SWAGGER_HTTP_HANDLER='' GIN_MODE=debug go run -tags migrate ./cmd/app
-.PHONY: run
+fmt-check: ## Fail when Go files are not gofmt-formatted
+	@unformatted="$$(git ls-files --cached --others --exclude-standard -z -- '*.go' | xargs -0 gofmt -l)"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "Unformatted Go files:" >&2; \
+		echo "$$unformatted" >&2; \
+		exit 1; \
+	fi
 
-docker-rm-volume: ### remove docker volume
-	docker volume rm go-clean-architecture_pg-data
-.PHONY: docker-rm-volume
+tidy-check: ## Verify that go.mod and go.sum need no tidy changes
+	$(GO) mod tidy -diff
 
-linter-golangci: ### check by golangci linter
-	golangci-lint run
-.PHONY: linter-golangci
+verify: ## Verify downloaded module checksums
+	$(GO) mod verify
 
-linter-hadolint: ### check by hadolint linter
-	git ls-files --exclude='Dockerfile*' -i -c | xargs hadolint
-.PHONY: linter-hadolint
+vet: ## Run go vet across all packages
+	$(GO) vet ./...
 
-linter-dotenv: ### check by dotenv linter
-	dotenv-linter
-.PHONY: linter-dotenv
+test: ## Run unit tests with coverage
+	$(GO) test -shuffle=on -cover ./...
 
-test: ### run test
-	go test -v -cover -race ./internal/...
-.PHONY: test
+test-race: ## Run the test suite with the race detector
+	CGO_ENABLED=1 $(GO) test -race -shuffle=on ./...
 
-migrate-create:  ### create new migration
-	migrate create -ext sql -dir db/migrations 'migrate_name'
-.PHONY: migrate-create
+lint: ## Run golangci-lint (v2 configuration)
+	$(GOLANGCI_LINT) run --timeout=5m ./...
 
-migrate-up: ### migration up
-	migrate -path db/migrations -database '$(PG_URL)?sslmode=disable' up
-.PHONY: migrate-up
+vuln: ## Scan reachable Go code for known vulnerabilities
+	GOTOOLCHAIN="$$($(GO) env GOVERSION)" GOFLAGS= $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
-migrate-down: ### migration down
-	migrate -path db/migrations -database '$(PG_URL)?sslmode=disable' down
-.PHONY: migrate-down
+build: ## Build the application and migration binaries
+	mkdir -p "$(BIN_DIR)"
+	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false -o "$(APP_BINARY)" ./cmd/app
+	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false -o "$(MIGRATE_BINARY)" ./cmd/migrate
+	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false -o "$(HEALTHCHECK_BINARY)" ./cmd/healthcheck
 
-test-coverage: ###test-coverage
-	go test -v ./... -covermode=count -coverpkg=./... -coverprofile coverage/coverage.out
-	go tool cover -html coverage/coverage.out -o coverage/coverage.html
-.PHONY: test-coverage
+check: fmt-check tidy-check verify vet test test-race lint vuln build ## Run the complete local quality gate
+
+compose-config: env-check ## Validate the canonical Compose file
+	$(COMPOSE) --env-file "$(ENV_FILE)" config --quiet
+
+compose-build: env-check ## Build the application image (also used by the migration job)
+	$(COMPOSE) --env-file "$(ENV_FILE)" build app
+
+compose-up: env-check ## Start PostgreSQL, apply migrations, and run the app
+	$(COMPOSE) --env-file "$(ENV_FILE)" up --build --force-recreate --detach app
+
+compose-down: env-check ## Stop Compose services (keeps the database volume)
+	$(COMPOSE) --env-file "$(ENV_FILE)" down --remove-orphans
+
+compose-logs: env-check ## Follow application and database logs
+	$(COMPOSE) --env-file "$(ENV_FILE)" logs --follow --tail=200 app migrate postgres
+
+logs: compose-logs ## Alias for compose-logs
+
+migrate: migrate-up ## Apply pending database migrations
+
+migrate-up: compose-build ## Apply pending database migrations in the Compose job
+	$(COMPOSE) --env-file "$(ENV_FILE)" run --rm migrate up
+
+migrate-down: compose-build ## Roll back one migration (requires CONFIRM=1)
+	@test "$(CONFIRM)" = "1" || { \
+		echo "Refusing destructive migration-down; rerun with CONFIRM=1." >&2; \
+		exit 1; \
+	}
+	$(COMPOSE) --env-file "$(ENV_FILE)" run --rm migrate down
+
+migrate-version: compose-build ## Show the current migration version
+	$(COMPOSE) --env-file "$(ENV_FILE)" run --rm migrate version
+
+migrate-step: compose-build ## Apply or roll back N migrations (set STEP=N)
+	@test -n "$(STEP)" || { \
+		echo "Set STEP to a non-zero integer, for example: make migrate-step STEP=1" >&2; \
+		exit 1; \
+	}
+	$(COMPOSE) --env-file "$(ENV_FILE)" run --rm migrate step "$(STEP)"

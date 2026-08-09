@@ -67,18 +67,20 @@ func RunContext(ctx context.Context, cfg *config.Config) error {
 		httpserver.WriteTimeout(15*time.Second),
 		httpserver.ShutdownTimeout(10*time.Second),
 	)
+	server.Start()
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
-		logger.Info("app - Run - context cancelled", logger.ErrWrap(ctx.Err()))
+		logger.Info("app - Run - context cancelled")
 	case serverErr := <-server.Notify():
 		if serverErr != nil && !errors.Is(serverErr, http.ErrServerClosed) {
-			return fmt.Errorf("app: HTTP server: %w", serverErr)
+			serveErr = fmt.Errorf("app: HTTP server: %w", serverErr)
 		}
 	}
 
 	if err := server.Shutdown(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("app: HTTP shutdown: %w", err)
 	}
-	return nil
+	return serveErr
 }

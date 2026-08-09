@@ -4,6 +4,8 @@
 
 # Config
 .env
+.env.*
+!.env.example
 
 # Binaries for programs and plugins
 *.exe
@@ -21,3 +23,4 @@
 # Dependency directories (remove the comment below to include it)
 vendor/
 coverage/
+/bin/

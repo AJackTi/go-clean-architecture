@@ -43,13 +43,20 @@ func Load() (*Config, error) {
 }
 
 func load(lookup func(string) (string, bool)) (*Config, error) {
+	databaseURL, databaseURLSet := lookup("DATABASE_URL")
+	if !databaseURLSet {
+		databaseURL = defaultDatabaseURL
+	}
 	cfg := &Config{
 		AppEnv:      strings.TrimSpace(valueOrDefault(lookup, "APP_ENV", defaultAppEnv)),
 		HTTPPort:    strings.TrimSpace(valueOrDefault(lookup, "HTTP_PORT", defaultHTTPPort)),
 		LogLevel:    strings.TrimSpace(valueOrDefault(lookup, "LOG_LEVEL", defaultLogLevel)),
-		DatabaseURL: strings.TrimSpace(valueOrDefault(lookup, "DATABASE_URL", defaultDatabaseURL)),
+		DatabaseURL: strings.TrimSpace(databaseURL),
 	}
 
+	if cfg.AppEnv == "production" && !databaseURLSet {
+		return nil, fmt.Errorf("config: DATABASE_URL must be explicitly set in production")
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

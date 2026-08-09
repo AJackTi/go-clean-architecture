@@ -4,14 +4,16 @@ package http
 import (
 	"context"
 	nethttp "net/http"
+	"time"
 
 	"github.com/AJackTi/go-clean-architecture/internal/item/httpapi"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	livenessPath  = "/api/health"
-	readinessPath = "/api/healthz"
+	livenessPath     = "/api/health"
+	readinessPath    = "/api/healthz"
+	readinessTimeout = 2 * time.Second
 )
 
 // ReadinessCheck reports whether the application's required dependencies are
@@ -29,7 +31,9 @@ func NewRouter(items httpapi.Service, readiness ReadinessCheck) *gin.Engine {
 		c.JSON(nethttp.StatusOK, healthResponse{Status: "ok"})
 	})
 	router.GET(readinessPath, func(c *gin.Context) {
-		if readiness == nil || readiness(c.Request.Context()) != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), readinessTimeout)
+		defer cancel()
+		if readiness == nil || readiness(ctx) != nil {
 			c.JSON(nethttp.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
 			return
 		}
