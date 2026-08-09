@@ -130,7 +130,7 @@ func TestOpenAPIContractDocumentsStableResponses(t *testing.T) {
 	want := map[string][]string{
 		"get /api/health":        {"200"},
 		"get /api/healthz":       {"200", "503"},
-		"post /api/v1/items":     {"201", "400", "401", "404", "409", "422", "429", "500"},
+		"post /api/v1/items":     {"200", "201", "400", "401", "404", "409", "422", "429", "500", "503"},
 		"get /api/v1/items":      {"200", "400", "401", "429", "500"},
 		"get /api/v1/items/{id}": {"200", "400", "401", "404", "429", "500"},
 	}
@@ -201,11 +201,78 @@ func TestOpenAPIContractCapturesDomainAndTransportPolicy(t *testing.T) {
 
 	errorDetails := componentSchema(t, document, "ErrorDetails")
 	assertClosedObject(t, "ErrorDetails", errorDetails, "code", "message")
-	wantCodes := []string{"bad_request", "conflict", "internal_error", "not_found", "rate_limited", "unauthorized", "validation_error"}
+	wantCodes := []string{"bad_request", "conflict", "idempotency_conflict", "idempotency_in_progress", "idempotency_unavailable", "internal_error", "not_found", "rate_limited", "unauthorized", "validation_error"}
 	gotCodes := append([]string(nil), errorDetails.Properties["code"].Enum...)
 	sort.Strings(gotCodes)
 	if strings.Join(gotCodes, ",") != strings.Join(wantCodes, ",") {
 		t.Errorf("ErrorDetails.code enum = %v, want %v", gotCodes, wantCodes)
+	}
+}
+
+func TestOpenAPIContractDocumentsIdempotentCreate(t *testing.T) {
+	document, _ := loadOpenAPI(t)
+	rawOperation, exists := document.Paths["/api/v1/items"]["post"]
+	if !exists {
+		t.Fatal("POST /api/v1/items is missing")
+	}
+	var operationValue struct {
+		Parameters  []json.RawMessage          `json:"parameters"`
+		Responses   map[string]json.RawMessage `json:"responses"`
+		Idempotency map[string]any             `json:"x-idempotency"`
+	}
+	decodeJSON(t, rawOperation, &operationValue)
+	if !hasReference(operationValue.Parameters, "#/components/parameters/IdempotencyKey") {
+		t.Fatal("POST /api/v1/items must reference the optional Idempotency-Key parameter")
+	}
+	if operationValue.Idempotency["supported"] != true {
+		t.Errorf("x-idempotency.supported = %#v, want true", operationValue.Idempotency["supported"])
+	}
+	if operationValue.Idempotency["retention"] != "24h after successful completion" {
+		t.Errorf("x-idempotency.retention = %#v", operationValue.Idempotency["retention"])
+	}
+
+	keySchema := componentSchema(t, document, "IdempotencyKey")
+	assertStringPolicy(t, "IdempotencyKey", keySchema, 1, 255)
+	if keySchema.Pattern == "" {
+		t.Error("IdempotencyKey must constrain values to an HTTP token pattern")
+	}
+
+	for _, status := range []string{"200", "201"} {
+		response := resolveResponse(t, document, operationValue.Responses[status])
+		rawHeaders, ok := response["headers"]
+		if !ok {
+			t.Fatalf("POST response %s has no headers", status)
+		}
+		var headers map[string]json.RawMessage
+		decodeJSON(t, rawHeaders, &headers)
+		if _, ok := headers["Idempotency-Key"]; !ok {
+			t.Errorf("POST response %s has no Idempotency-Key header", status)
+		}
+		if status == "200" {
+			var replayHeader struct {
+				Ref string `json:"$ref"`
+			}
+			rawReplay, ok := headers["Idempotency-Replayed"]
+			if !ok {
+				t.Fatal("replay response must document Idempotency-Replayed")
+			}
+			decodeJSON(t, rawReplay, &replayHeader)
+			if replayHeader.Ref != "#/components/headers/IdempotencyReplayed" {
+				t.Errorf("Idempotency-Replayed ref = %q", replayHeader.Ref)
+			}
+		}
+	}
+
+	conflict := resolveResponse(t, document, operationValue.Responses["409"])
+	var description string
+	if rawDescription, ok := conflict["description"]; ok {
+		decodeJSON(t, rawDescription, &description)
+	}
+	if !strings.Contains(description, "idempotency_conflict") || !strings.Contains(description, "idempotency_in_progress") {
+		t.Errorf("409 description does not document idempotency outcomes: %q", description)
+	}
+	if _, ok := operationValue.Responses["503"]; !ok {
+		t.Fatal("POST /api/v1/items must document 503 idempotency_unavailable")
 	}
 }
 

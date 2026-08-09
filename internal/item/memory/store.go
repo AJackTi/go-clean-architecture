@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/AJackTi/go-clean-architecture/internal/item"
 	"github.com/google/uuid"
@@ -16,17 +17,50 @@ import (
 
 var _ item.Store = (*Store)(nil)
 
+var _ item.IdempotentCreateStore = (*Store)(nil)
+
 // Store keeps independent value copies behind a mutex.  Item currently has
 // value-only fields; copying on reads also prevents future slice operations
 // from aliasing the store's internal state.
 type Store struct {
-	mu    sync.RWMutex
-	items map[uuid.UUID]item.Item
+	mu            sync.RWMutex
+	items         map[uuid.UUID]item.Item
+	idempotencyMu sync.Mutex
+	idempotency   map[[32]byte]idempotencyEntry
+	inflight      map[[32]byte]struct{}
+	maxEntries    int
+	clockMu       sync.RWMutex
+	clock         func() time.Time
+}
+
+// Option configures adapter-only behaviour. Domain policy remains in item;
+// the clock option exists so retention cleanup can be tested deterministically.
+type Option func(*Store)
+
+// WithClock replaces the wall clock used for idempotency retention timestamps.
+// A nil clock restores the production wall clock.
+func WithClock(clock func() time.Time) Option {
+	return func(store *Store) {
+		store.clockMu.Lock()
+		store.clock = clock
+		store.clockMu.Unlock()
+	}
 }
 
 // NewStore returns an empty Store.  The Store's zero value is also usable.
-func NewStore() *Store {
-	return &Store{items: make(map[uuid.UUID]item.Item)}
+func NewStore(options ...Option) *Store {
+	store := &Store{
+		items:       make(map[uuid.UUID]item.Item),
+		idempotency: make(map[[32]byte]idempotencyEntry),
+		inflight:    make(map[[32]byte]struct{}),
+		maxEntries:  item.MaxIdempotencyEntries,
+	}
+	for _, option := range options {
+		if option != nil {
+			option(store)
+		}
+	}
+	return store
 }
 
 // New is a concise alias for NewStore, convenient in small examples.

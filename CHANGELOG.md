@@ -12,3 +12,5 @@ the bootstrap history that predates automated releases.
 - Add CI quality, dependency security, cross-platform build, SBOM, and
   provenance gates.
 - Keep architecture and operational documentation current with each feature.
+- Add optional atomic, scoped idempotency keys for safe Item-create retries,
+  replay responses, and PostgreSQL migration support.

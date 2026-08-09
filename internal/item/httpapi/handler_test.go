@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,6 +229,191 @@ func TestCreateRejectsServiceResultWithoutID(t *testing.T) {
 	}
 }
 
+func TestCreateIdempotencyReplaysWithOKAndStableHeaders(t *testing.T) {
+	t.Parallel()
+
+	want := item.Item{
+		ID:          uuid.MustParse("c80c1043-a6cd-42bf-984e-0191352f4b26"),
+		Name:        "keyboard",
+		Description: "quiet",
+		CreatedAt:   time.Date(2026, time.August, 9, 12, 30, 0, 0, time.UTC),
+	}
+	var calls int
+	service := &idempotentServiceStub{serviceStub: &serviceStub{}, createIdempotentFn: func(_ context.Context, _ item.CreateInput, _ string) (item.Item, bool, error) {
+		calls++
+		return want, calls > 1, nil
+	}}
+	router := newRouter(service)
+
+	first := performRequestWithHeaders(t, router, http.MethodPost, "/api/v1/items", `{"name":"keyboard","description":"quiet"}`, map[string][]string{httpapi.IdempotencyKeyHeader: {"request-123"}})
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want 201; body=%s", first.Code, first.Body.String())
+	}
+	if got := first.Header().Get(httpapi.IdempotencyKeyHeader); got != "request-123" {
+		t.Fatalf("first Idempotency-Key = %q", got)
+	}
+	if got := first.Header().Get(httpapi.IdempotencyReplayedHeader); got != "" {
+		t.Fatalf("first replay marker = %q, want absent", got)
+	}
+	if got := first.Header().Get("Location"); got != "/api/v1/items/"+want.ID.String() {
+		t.Fatalf("first Location = %q", got)
+	}
+
+	second := performRequestWithHeaders(t, router, http.MethodPost, "/api/v1/items", `{"name":"keyboard","description":"quiet"}`, map[string][]string{httpapi.IdempotencyKeyHeader: {"request-123"}})
+	if second.Code != http.StatusOK {
+		t.Fatalf("replay status = %d, want 200; body=%s", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("Location"); got != first.Header().Get("Location") {
+		t.Fatalf("replay Location = %q, want %q", got, first.Header().Get("Location"))
+	}
+	if got := second.Header().Get(httpapi.IdempotencyKeyHeader); got != "request-123" {
+		t.Fatalf("replay Idempotency-Key = %q", got)
+	}
+	if got := second.Header().Get(httpapi.IdempotencyReplayedHeader); got != "true" {
+		t.Fatalf("replay marker = %q, want true", got)
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replay body = %q, want exact first body %q", second.Body.String(), first.Body.String())
+	}
+}
+
+func TestCreateIdempotencyMapsConflictAndInProgress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		status    int
+		code      string
+		wantRetry string
+	}{
+		{name: "conflict", err: item.ErrIdempotencyConflict, status: http.StatusConflict, code: "idempotency_conflict"},
+		{name: "in progress", err: item.ErrIdempotencyInProgress, status: http.StatusConflict, code: "idempotency_in_progress", wantRetry: "1"},
+		{name: "unavailable", err: item.ErrIdempotencyUnavailable, status: http.StatusServiceUnavailable, code: "idempotency_unavailable"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			service := &idempotentServiceStub{serviceStub: &serviceStub{}, createIdempotentFn: func(context.Context, item.CreateInput, string) (item.Item, bool, error) {
+				return item.Item{}, false, test.err
+			}}
+			response := performRequestWithHeaders(t, newRouter(service), http.MethodPost, "/api/v1/items", `{"name":"keyboard"}`, map[string][]string{httpapi.IdempotencyKeyHeader: {"request-123"}})
+			assertAPIError(t, response, test.status, test.code, map[string]string{
+				"idempotency_conflict":    "idempotency key was used with a different request",
+				"idempotency_in_progress": "idempotency request is still in progress",
+				"idempotency_unavailable": "idempotent create is temporarily unavailable",
+			}[test.code])
+			if got := response.Header().Get("Retry-After"); got != test.wantRetry {
+				t.Errorf("Retry-After = %q, want %q", got, test.wantRetry)
+			}
+			if got := response.Header().Get(httpapi.IdempotencyKeyHeader); got != "" {
+				t.Errorf("error Idempotency-Key = %q, want absent", got)
+			}
+		})
+	}
+}
+
+func TestCreateIdempotencyRejectsMalformedOrDuplicateHeadersBeforeService(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		values []string
+	}{
+		{name: "empty", values: []string{""}},
+		{name: "space", values: []string{"has space"}},
+		{name: "comma", values: []string{"one,two"}},
+		{name: "oversized", values: []string{strings.Repeat("a", item.MaxIdempotencyKeyBytes+1)}},
+		{name: "duplicate", values: []string{"first", "second"}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			service := &idempotentServiceStub{serviceStub: &serviceStub{}, createIdempotentFn: func(context.Context, item.CreateInput, string) (item.Item, bool, error) {
+				calls++
+				return item.Item{}, false, nil
+			}}
+			headers := map[string][]string{httpapi.IdempotencyKeyHeader: test.values}
+			response := performRequestWithHeaders(t, newRouter(service), http.MethodPost, "/api/v1/items", `{"name":"keyboard"}`, headers)
+			assertAPIError(t, response, http.StatusBadRequest, "bad_request", "invalid idempotency key")
+			if calls != 0 {
+				t.Errorf("idempotent service calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestCreateIdempotencyRejectsCaseVariantDuplicateHeaderMapEntries(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	service := &idempotentServiceStub{serviceStub: &serviceStub{}, createIdempotentFn: func(context.Context, item.CreateInput, string) (item.Item, bool, error) {
+		calls++
+		return item.Item{ID: uuid.New(), Name: "unexpected"}, false, nil
+	}}
+	router := newRouter(service)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/items", strings.NewReader(`{"name":"keyboard"}`))
+	request.Header.Set("Content-Type", "application/json")
+	// Direct map construction models a proxy/adapter that preserved unusual
+	// header casing; the parser must not let it hide a duplicate value.
+	request.Header["Idempotency-Key"] = []string{"first"}
+	request.Header["idempotency-key"] = []string{"second"}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	assertAPIError(t, response, http.StatusBadRequest, "bad_request", "invalid idempotency key")
+	if calls != 0 {
+		t.Errorf("idempotent service calls = %d, want 0", calls)
+	}
+}
+
+func TestCreateWithKeyReturns503WhenServiceHasNoIdempotencyCapability(t *testing.T) {
+	t.Parallel()
+
+	service := &serviceStub{create: func(context.Context, item.CreateInput) (item.Item, error) {
+		return item.Item{ID: uuid.New(), Name: "unexpected"}, nil
+	}}
+	response := performRequestWithHeaders(t, newRouter(service), http.MethodPost, "/api/v1/items", `{"name":"keyboard"}`, map[string][]string{httpapi.IdempotencyKeyHeader: {"request-123"}})
+	assertAPIError(t, response, http.StatusServiceUnavailable, "idempotency_unavailable", "idempotent create is temporarily unavailable")
+}
+
+func TestCreateIdempotencyConcurrentCallsAreDelegated(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	calls := 0
+	service := &idempotentServiceStub{serviceStub: &serviceStub{}, createIdempotentFn: func(_ context.Context, _ item.CreateInput, _ string) (item.Item, bool, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return item.Item{ID: uuid.New(), Name: "keyboard"}, false, nil
+	}}
+	router := newRouter(service)
+	const requests = 8
+	var group sync.WaitGroup
+	responses := make(chan int, requests)
+	for i := 0; i < requests; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			response := performRequestWithHeaders(t, router, http.MethodPost, "/api/v1/items", `{"name":"keyboard"}`, map[string][]string{httpapi.IdempotencyKeyHeader: {"request-123"}})
+			responses <- response.Code
+		}()
+	}
+	group.Wait()
+	close(responses)
+	if calls != requests {
+		t.Errorf("delegated calls = %d, want %d", calls, requests)
+	}
+	for status := range responses {
+		if status != http.StatusCreated {
+			t.Errorf("concurrent status = %d, want 201 for this pass-through fake", status)
+		}
+	}
+}
+
 func TestGetReturnsItemByUUID(t *testing.T) {
 	t.Parallel()
 
@@ -427,10 +613,29 @@ func TestNilServiceReturnsSanitizedInternalError(t *testing.T) {
 	assertAPIError(t, response, http.StatusInternalServerError, "internal_error", "internal server error")
 }
 
+func TestNilServiceWithIdempotencyKeyFailsClosedAsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	response := performRequestWithHeaders(t, newRouter(nil), http.MethodPost, "/api/v1/items", `{"name":"keyboard"}`, map[string][]string{httpapi.IdempotencyKeyHeader: {"request-123"}})
+	assertAPIError(t, response, http.StatusServiceUnavailable, "idempotency_unavailable", "idempotent create is temporarily unavailable")
+}
+
 type serviceStub struct {
 	create func(context.Context, item.CreateInput) (item.Item, error)
 	get    func(context.Context, uuid.UUID) (item.Item, error)
 	list   func(context.Context, item.ListParams) (item.Page, error)
+}
+
+type idempotentServiceStub struct {
+	*serviceStub
+	createIdempotentFn func(context.Context, item.CreateInput, string) (item.Item, bool, error)
+}
+
+func (s *idempotentServiceStub) CreateIdempotent(ctx context.Context, input item.CreateInput, key string) (item.Item, bool, error) {
+	if s.createIdempotentFn == nil {
+		return item.Item{}, false, errors.New("unexpected CreateIdempotent call")
+	}
+	return s.createIdempotentFn(ctx, input, key)
 }
 
 func (s *serviceStub) Create(ctx context.Context, input item.CreateInput) (item.Item, error) {
@@ -466,6 +671,22 @@ func performRequest(t *testing.T, handler http.Handler, method, target, body str
 	request := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func performRequestWithHeaders(t *testing.T, handler http.Handler, method, target, body string, headers map[string][]string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, target, bytes.NewBufferString(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	for key, values := range headers {
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

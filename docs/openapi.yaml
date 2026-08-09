@@ -96,7 +96,24 @@ paths:
         time. Name and description are edge-trimmed before domain validation.
         Request JSON is strict: unknown fields, malformed JSON, trailing JSON
         values, and bodies larger than 1 MiB are rejected with HTTP 400.
+        Supplying one `Idempotency-Key` makes the create safe to retry for the
+        24-hour retention window. The fingerprint is computed from the
+        canonical (trimmed) name and description. A replay returns the same
+        Item, body, and `Location` with HTTP 200 and
+        `Idempotency-Replayed: true`; a different payload for a retained key
+        returns HTTP 409. Requests using the same key concurrently are
+        serialized by the persistence adapter; a request that cannot acquire
+        the key returns HTTP 409 with `Retry-After`.
+      x-idempotency:
+        supported: true
+        key-header: Idempotency-Key
+        fingerprint: sha-256 of canonical name and description
+        retention: 24h after successful completion
+        scope: authenticated principal, or direct peer address when auth is disabled
+        privacy: raw keys, scopes, and fingerprints are hashed before storage; the validated key is echoed only in successful keyed response headers and never logged or included in error bodies
       x-request-body-max-bytes: 1048576
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -107,11 +124,39 @@ paths:
               name: Mechanical keyboard
               description: Hot-swappable
       responses:
+        '200':
+          description: The create was replayed from a retained idempotency record.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+            Idempotency-Key:
+              $ref: '#/components/headers/IdempotencyKeyReplay'
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+            Location:
+              required: true
+              description: Relative URL of the original Item.
+              schema:
+                type: string
+                format: uri-reference
+              example: /api/v1/items/c80c1043-a6cd-42bf-984e-0191352f4b26
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemDataResponse'
+              example:
+                data:
+                  id: c80c1043-a6cd-42bf-984e-0191352f4b26
+                  name: Mechanical keyboard
+                  description: Hot-swappable
+                  created_at: '2026-08-09T12:30:00Z'
         '201':
           description: Item created.
           headers:
             X-Request-ID:
               $ref: '#/components/headers/RequestID'
+            Idempotency-Key:
+              $ref: '#/components/headers/IdempotencyKey'
             Location:
               required: true
               description: Relative URL of the newly created Item.
@@ -136,11 +181,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/CreateConflict'
         '422':
           $ref: '#/components/responses/ValidationError'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/IdempotencyUnavailable'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -247,6 +294,19 @@ components:
         type: string
         maxLength: 128
         pattern: "^[-A-Za-z0-9!#$%&'*+.^_`|~]{1,128}$"
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional request token. It must contain exactly one HTTP token value of
+        1–255 ASCII bytes. Duplicate, empty, whitespace, control, non-ASCII, or
+        oversized values are rejected with HTTP 400. The server hashes the
+        value and combines it with the caller scope. The validated token may be
+        echoed in a successful response header, but is never persisted, logged,
+        or included in an error body.
+      schema:
+        $ref: '#/components/schemas/IdempotencyKey'
     ItemID:
       name: id
       in: path
@@ -294,6 +354,29 @@ components:
         type: string
         maxLength: 128
         pattern: "^[-A-Za-z0-9!#$%&'*+.^_`|~]{1,128}$"
+    IdempotencyKey:
+      required: false
+      description: The accepted idempotency token, echoed when a keyed create succeeds.
+      schema:
+        $ref: '#/components/schemas/IdempotencyKey'
+    IdempotencyKeyReplay:
+      required: true
+      description: The accepted idempotency token associated with the replayed create.
+      schema:
+        $ref: '#/components/schemas/IdempotencyKey'
+    IdempotencyReplayed:
+      required: true
+      description: Indicates that the response was replayed from a retained idempotency record.
+      schema:
+        type: string
+        const: 'true'
+    RetryAfter:
+      required: false
+      description: Minimum number of seconds before retrying an in-progress idempotent request.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
   responses:
     BadRequestBody:
       description: The request body is missing, malformed, too large, or not strict JSON.
@@ -373,6 +456,45 @@ components:
             error:
               code: conflict
               message: item already exists
+    CreateConflict:
+      description: >-
+        The create conflicts with existing state. `idempotency_conflict` means
+        the retained key was used with a different canonical payload;
+        `idempotency_in_progress` means another request is currently processing
+        the key and clients should retry after the advertised delay.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            idempotencyConflict:
+              value:
+                error:
+                  code: idempotency_conflict
+                  message: idempotency key was used with a different request
+            idempotencyInProgress:
+              value:
+                error:
+                  code: idempotency_in_progress
+                  message: idempotency request is still in progress
+    IdempotencyUnavailable:
+      description: The requested idempotency capability is temporarily unavailable.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: idempotency_unavailable
+              message: idempotent create is temporarily unavailable
     InternalError:
       description: An internal dependency failed; provider details are not exposed.
       headers:
@@ -529,7 +651,7 @@ components:
       properties:
         code:
           type: string
-          enum: [bad_request, validation_error, not_found, conflict, unauthorized, rate_limited, internal_error]
+          enum: [bad_request, validation_error, not_found, conflict, idempotency_conflict, idempotency_in_progress, idempotency_unavailable, unauthorized, rate_limited, internal_error]
           description: Stable machine-readable error code.
         message:
           type: string
@@ -559,3 +681,9 @@ components:
         status:
           type: string
           const: unavailable
+    IdempotencyKey:
+      type: string
+      minLength: 1
+      maxLength: 255
+      pattern: "^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,255}$"
+      description: HTTP token used to safely retry a create request.

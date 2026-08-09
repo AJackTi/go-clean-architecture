@@ -18,6 +18,7 @@ distinguish intentional constraints from accidental code shape.
 | [0008](0008-openapi-contract-and-route-drift-check.md) | Keep a checked-in OpenAPI contract beside the HTTP adapter | Accepted |
 | [0009](0009-opt-in-bounded-http-telemetry.md) | Use opt-in bounded HTTP metrics and tracing | Accepted |
 | [0010](0010-opt-in-authentication-and-rate-limiting.md) | Keep starter authentication and rate limiting opt-in | Accepted |
+| [0011](0011-atomic-scoped-idempotent-creates.md) | Make keyed creates atomic, scoped, and opt-in | Accepted |
 
 ## Adding a decision
 

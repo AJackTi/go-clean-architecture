@@ -17,7 +17,8 @@ and the wall clock.
   persistence rather than duplicating business policy.
 - Identity and ordering are consistent across memory and PostgreSQL adapters,
   and database round trips are normalized to UTC.
-- Retries are not idempotent by default: a retried create can produce a new
-  UUID. An idempotency-key policy must be added explicitly if clients need it.
+- Retries without an `Idempotency-Key` are not idempotent and can produce a new
+  UUID. The optional policy and atomic persistence seam are defined in
+  [ADR-0011](0011-atomic-scoped-idempotent-creates.md).
 - Future update/delete use cases must state whether `CreatedAt` remains
   immutable and how changes affect page ordering.

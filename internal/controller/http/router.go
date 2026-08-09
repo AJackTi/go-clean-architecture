@@ -121,9 +121,9 @@ func buildRouter(items httpapi.Service, readiness ReadinessCheck, config routerC
 	}
 	middleware = append(middleware, sanitizedRecovery())
 	router.Use(middleware...)
-	if config.auth != nil || config.limiter != nil {
-		router.Use(apiSecurityMiddleware(config.auth, config.limiter))
-	}
+	// Keep the middleware mounted even when both optional controls are off: it
+	// still attaches a bounded direct-peer scope for idempotent creates.
+	router.Use(apiSecurityMiddleware(config.auth, config.limiter))
 	_ = router.SetTrustedProxies(nil)
 
 	router.GET(livenessPath, func(c *gin.Context) {

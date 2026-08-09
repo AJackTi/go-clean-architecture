@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AJackTi/go-clean-architecture/internal/item"
 	"github.com/AJackTi/go-clean-architecture/pkg/auth"
 	"github.com/AJackTi/go-clean-architecture/pkg/ratelimit"
 	"github.com/gin-gonic/gin"
@@ -71,6 +72,13 @@ func securityMiddleware(authenticator auth.Authenticator, limiter *ratelimit.Lim
 		key := clientRateKey(c)
 		if authenticated {
 			key = principalRateKey(principal.Subject)
+		}
+		if c.Request != nil {
+			// Idempotency scopes use the same bounded identity policy as rate
+			// limiting. The direct peer is used when auth is disabled; forwarded
+			// headers are intentionally never trusted here.
+			requestContext := item.WithIdempotencyScope(c.Request.Context(), "items:create:"+key)
+			c.Request = c.Request.WithContext(requestContext)
 		}
 		if !allowSecurityRequest(c, limiter, key) {
 			return

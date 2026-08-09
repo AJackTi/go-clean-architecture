@@ -21,6 +21,8 @@ not a framework or a collection of speculative abstractions.
   interface.
 - A strict Gin HTTP adapter with bounded JSON bodies, stable envelopes, and
   explicit error mappings.
+- Opt-in idempotent item creation with canonical request fingerprints, scoped
+  keys, replay-safe responses, and atomic memory/PostgreSQL persistence.
 - Explicit, repeatable migrations through `cmd/migrate`.
 - Liveness (`/api/health`) and dependency readiness (`/api/healthz`) probes.
 - An explicit HTTP server lifecycle with bounded timeouts and graceful
@@ -150,6 +152,11 @@ use the direct peer IP (never `X-Forwarded-For`). A `429` response includes
 `Retry-After`. The limiter is per process and intentionally not a replacement
 for an API gateway or shared Redis policy in a multi-replica deployment.
 
+The same bounded identity policy scopes idempotent creates. With authentication
+enabled, a key belongs to the authenticated principal; with authentication
+disabled, it belongs to the direct peer address. Forwarded headers are never
+trusted for either policy.
+
 ## Development workflow
 
 ```sh
@@ -222,6 +229,33 @@ curl --fail --request POST http://127.0.0.1:8080/api/v1/items \
   --data '{"name":"Mechanical keyboard","description":"Hot-swappable"}'
 ```
 
+### Retrying a create safely
+
+Add one `Idempotency-Key` HTTP token when a client may retry after a timeout or
+connection failure:
+
+```sh
+curl --fail --request POST http://127.0.0.1:8080/api/v1/items \
+  --header 'Content-Type: application/json' \
+  --header 'Idempotency-Key: order-20260810-0001' \
+  --data '{"name":"Mechanical keyboard","description":"Hot-swappable"}'
+```
+
+The first successful call returns `201 Created`. Repeating the same key with
+the same canonical payload (name and description after edge trimming) returns
+`200 OK`, the identical Item envelope and `Location`, and
+`Idempotency-Replayed: true`. Records are retained for 24 hours after the
+successful atomic write; after expiry the key can represent a new operation.
+Use exactly one non-empty HTTP token value (1–255 ASCII bytes). Duplicate,
+malformed, or oversized headers are rejected with `400` before the service is
+called. A retained key with a different payload returns `409` with
+`idempotency_conflict`; a concurrent request may return `409` with
+`idempotency_in_progress` and `Retry-After: 1`. If the configured store cannot
+provide the atomic capability, the keyed request returns sanitized `503`
+`idempotency_unavailable` rather than silently falling back to a non-atomic
+create. Raw keys, scopes, and fingerprints are hashed before persistence and
+are not included in logs or error bodies.
+
 Successful responses use a `data` envelope. List responses also include
 `meta.limit`, `meta.offset`, and `meta.has_more`. Names and descriptions are
 trimmed and validated by Unicode rune count. Unknown JSON fields, malformed
@@ -234,8 +268,10 @@ Errors use a stable shape and never expose provider details:
 ```
 
 Typical status mappings are `400` for malformed transport input, `422` for
-domain validation, `404` for a missing item, `409` for a conflict, and `500`
-for an unavailable internal dependency.
+domain validation, `404` for a missing item, `409` for a conflict (including
+the idempotency conflict/in-progress outcomes), `500` for an unavailable
+internal dependency, and `503` when an explicitly requested idempotency store
+is unavailable.
 
 Every response includes an `X-Request-ID` header. A valid single upstream
 value is preserved; missing, malformed, oversized, or duplicate values are
@@ -262,7 +298,7 @@ privacy guarantees.
 | [`internal/item`](internal/item) | Item domain module and use cases |
 | [`internal/item/httpapi`](internal/item/httpapi) | Item HTTP adapter and contract tests |
 | [`internal/item/memory`](internal/item/memory) | Deterministic race-safe memory adapter |
-| [`internal/item/postgres`](internal/item/postgres) | PostgreSQL adapter and integration test |
+| [`internal/item/postgres`](internal/item/postgres) | PostgreSQL adapter, atomic idempotency path, and integration test |
 | [`internal/controller/http`](internal/controller/http) | Router and operational endpoints |
 | [`pkg/httpserver`](pkg/httpserver) | Reusable server lifecycle module |
 | [`pkg/logger`](pkg/logger) | Process logging seam |
@@ -270,7 +306,7 @@ privacy guarantees.
 | [`pkg/telemetry`](pkg/telemetry) | Optional OTLP/HTTP tracing provider |
 | [`pkg/auth`](pkg/auth) | Strict Bearer parsing and digest verification seam |
 | [`pkg/ratelimit`](pkg/ratelimit) | Bounded concurrent in-process token bucket |
-| [`db/migrations`](db/migrations) | Versioned PostgreSQL schema changes |
+| [`db/migrations`](db/migrations) | Versioned PostgreSQL schema changes, including the idempotency-key retention table |
 | [`scripts/template-smoke.sh`](scripts/template-smoke.sh) | Verify a clean generated repository end to end |
 | [`.github`](.github) | CI, dependency updates, and contribution workflow |
 
@@ -305,6 +341,13 @@ make migrate-step STEP=1
 ```
 
 `migrate-down` is intentionally guarded because it removes schema state.
+
+Migration `0000002_create_item_idempotency_keys` adds the hashed-key replay
+table. It stores only a SHA-256 key hash, a SHA-256 canonical-request hash, the
+referenced Item UUID, and timestamps. Expired records are cleaned in bounded
+batches during idempotent creates; the 24-hour retention window starts only
+after the Item and replay record commit together. Keep the migration applied
+before enabling keyed creates against PostgreSQL.
 
 ## Container and supply-chain posture
 

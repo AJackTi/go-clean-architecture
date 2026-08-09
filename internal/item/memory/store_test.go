@@ -187,3 +187,57 @@ func TestNewAliasAndZeroLimit(t *testing.T) {
 		t.Fatalf("List(zero limit) = %#v, want non-nil empty slice", page)
 	}
 }
+
+func TestStoreIdempotencyCapacityAndExpiry(t *testing.T) {
+	var nowMu sync.RWMutex
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		nowMu.RLock()
+		defer nowMu.RUnlock()
+		return now
+	}
+	store := NewStore(WithClock(clock))
+	store.maxEntries = 2
+	fingerprint := "0000000000000000000000000000000000000000000000000000000000000000"
+	for index := 0; index < 2; index++ {
+		value := item.Item{ID: uuid.New(), Name: fmt.Sprintf("item-%d", index), CreatedAt: now}
+		if _, _, err := store.CreateIdempotent(context.Background(), value, fmt.Sprintf("key-%d", index), fingerprint); err != nil {
+			t.Fatalf("CreateIdempotent(%d) error = %v", index, err)
+		}
+	}
+	value := item.Item{ID: uuid.New(), Name: "over-capacity", CreatedAt: now}
+	if _, _, err := store.CreateIdempotent(context.Background(), value, "key-2", fingerprint); !errors.Is(err, item.ErrIdempotencyUnavailable) {
+		t.Fatalf("over-capacity error = %v, want ErrIdempotencyUnavailable", err)
+	}
+	nowMu.Lock()
+	now = now.Add(item.IdempotencyRecordRetention + time.Second)
+	nowMu.Unlock()
+	if _, _, err := store.CreateIdempotent(context.Background(), value, "key-2", fingerprint); err != nil {
+		t.Fatalf("CreateIdempotent after expiry error = %v", err)
+	}
+}
+
+func TestStoreIdempotencyFailedWriteDoesNotPoisonKey(t *testing.T) {
+	store := NewStore()
+	ctx := context.Background()
+	fingerprint := "0000000000000000000000000000000000000000000000000000000000000000"
+	occupied := item.Item{ID: uuid.New(), Name: "occupied"}
+	if _, err := store.Create(ctx, occupied); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if _, _, err := store.CreateIdempotent(ctx, occupied, "retry-key", fingerprint); !errors.Is(err, item.ErrConflict) {
+		t.Fatalf("failed idempotent write = %v, want ErrConflict", err)
+	}
+	retry := item.Item{ID: uuid.New(), Name: "retry"}
+	if _, replayed, err := store.CreateIdempotent(ctx, retry, "retry-key", fingerprint); err != nil || replayed {
+		t.Fatalf("key reuse after failed write = replayed=%t, err=%v", replayed, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, err := store.CreateIdempotent(canceled, item.Item{ID: uuid.New(), Name: "canceled"}, "canceled-key", fingerprint); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled idempotent write = %v, want context.Canceled", err)
+	}
+	if _, replayed, err := store.CreateIdempotent(ctx, item.Item{ID: uuid.New(), Name: "after-cancel"}, "canceled-key", fingerprint); err != nil || replayed {
+		t.Fatalf("key reuse after cancellation = replayed=%t, err=%v", replayed, err)
+	}
+}

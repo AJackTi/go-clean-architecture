@@ -18,6 +18,22 @@ and delivery workflow when adding a real domain feature.
 
 **Item page**: A deterministic newest-first collection containing Items, a normalized limit and offset, and a `has_more` flag.
 
+**Idempotency key**: A client-supplied HTTP token used to retry one Item create
+without producing a second Item. The transport accepts 1–255 ASCII HTTP-token
+bytes and rejects duplicate header values.
+
+**Canonical create fingerprint**: A SHA-256 digest of the validated,
+edge-trimmed `name` and `description` fields. Equivalent padding therefore
+replays, while a changed canonical payload conflicts.
+
+**Idempotency scope**: A bounded caller identity combined with the route and
+hashed with the key. Authenticated requests use the principal; auth-disabled
+requests use the direct peer address. `X-Forwarded-For` is never trusted.
+
+**Idempotency record**: A bounded-retention mapping from an opaque key hash and
+fingerprint to the committed Item. The default replay window is 24 hours after
+successful completion.
+
 ## Architecture language
 
 **Item module**: The inward-facing module that owns Item policy and exposes use cases plus the `Store` Interface.
@@ -34,6 +50,9 @@ and delivery workflow when adding a real domain feature.
 - The Item module canonicalizes create input, assigns the **Item identity** and **Creation time**, and then writes the Item through its Store seam.
 - An **Item page** orders Items by `created_at DESC, id DESC`; the second key makes ties deterministic.
 - The HTTP adapter translates a request into the Item module's input and translates stable domain errors into transport responses; it does not own Item policy.
+- An idempotent create is one atomic persistence operation: the Item row and
+  its replay record commit together, or neither commits. A replay returns the
+  original Item with HTTP 200; the first successful create returns HTTP 201.
 
 ## Operational contracts
 
@@ -46,6 +65,13 @@ and delivery workflow when adding a real domain feature.
 - Prometheus HTTP metrics are opt-in and use only bounded method, matched-route, and status labels; the disabled-by-default `/metrics` endpoint never exposes raw URLs or process/runtime collectors.
 - HTTP server spans extract W3C trace context and export over optional OTLP/HTTP. Empty exporter configuration performs no collector I/O, production requires TLS, and span attributes follow the same no-query/body/header/raw-path privacy boundary as access events.
 - Authentication and rate limiting are opt-in transport policies for `/api/v1`: the starter Bearer verifier compares a configured SHA-256 digest without retaining the secret, and the in-process token bucket has bounded keys and memory. These controls do not imply end-user authorization or trust forwarded client headers.
+- Idempotency is opt-in per request through `Idempotency-Key`. Memory and
+  PostgreSQL adapters implement the cohesive atomic seam; a service never
+  combines an ordinary Item store with a separate idempotency backend. Raw
+  keys, scopes, and fingerprints are hashed before adapter storage and are not
+  logged. A retained payload mismatch maps to `409 idempotency_conflict`, an
+  in-flight key maps to `409 idempotency_in_progress` with `Retry-After`, and a
+  missing atomic capability maps to sanitized `503 idempotency_unavailable`.
 - The checked-in OpenAPI 3.1 document describes the same route set and response contract; `go test ./docs` fails when the document and mounted routes drift.
 
 ## Invariants and policies
@@ -55,6 +81,14 @@ and delivery workflow when adding a real domain feature.
 - A list request defaults to 20 Items and is capped at 100 Items. The Item module asks the Store for one look-ahead row to calculate `has_more`.
 - Stores return deterministic newest-first ordering and honor cancellation from the supplied context.
 - Domain errors are matched with `errors.Is`/`errors.As`; HTTP clients receive stable error codes and sanitized messages rather than provider details.
+- Invalid create input or a failed atomic persistence attempt does not retain an
+  idempotency record, so a client can safely correct and retry. Once an Item is
+  committed, its replay record remains even if the original request context is
+  cancelled after commit.
+- PostgreSQL cleans expired idempotency records in bounded batches during keyed
+  operations; the replay table stores fixed-size hashes rather than raw client
+  tokens or request bodies. The migration must be applied before keyed creates
+  are enabled.
 - The `internal/item` package has no dependency on Gin, pgx, PostgreSQL, or filesystem configuration. Adapters point inward to its interfaces and types.
 - There is currently no update or delete use case. Adding either requires an explicit policy for mutability, authorization, and pagination effects.
 
@@ -65,14 +99,14 @@ and delivery workflow when adding a real domain feature.
 | Composition root | `internal/app` | Validate configuration, open PostgreSQL, wire the Item module and HTTP adapter, and own shutdown. |
 | Item module | `internal/item` | Define Item language, validation, use cases, pagination, and stable errors. |
 | Memory adapter | `internal/item/memory` | Provide a race-safe, deterministic Store for tests and lightweight local runs. |
-| PostgreSQL adapter | `internal/item/postgres` | Implement Store with pgx and explicit parameterized SQL. |
+| PostgreSQL adapter | `internal/item/postgres` | Implement Store with pgx, explicit parameterized SQL, and atomic idempotent creates. |
 | HTTP adapter | `internal/item/httpapi` | Decode strict JSON, parse paths/queries, enforce body limits, and map errors/statuses. |
 | HTTP composition | `internal/controller/http` | Mount health endpoints and versioned routes, assign request IDs, and emit structured access events. |
 | Runtime modules | `pkg/httpserver`, `pkg/logger` | Provide explicit HTTP lifecycle and process-wide structured logging seams. |
 | Telemetry modules | `pkg/metrics`, `pkg/telemetry` | Own an isolated Prometheus registry and an optional OTLP/HTTP tracing provider with bounded lifecycle. |
 | Security modules | `pkg/auth`, `pkg/ratelimit` | Provide an opt-in Bearer verification seam and a bounded in-process limiter; they do not implement resource authorization. |
 | Commands | `cmd/app`, `cmd/bootstrap`, `cmd/migrate`, `cmd/healthcheck` | Customize a clean checkout, start the app, apply migrations, and probe readiness in the minimal runtime image. |
-| Schema | `db/migrations` | Versioned PostgreSQL schema changes with paired up/down files. |
+| Schema | `db/migrations` | Versioned PostgreSQL schema changes with paired up/down files, including the idempotency replay table. |
 | Contract documentation | `docs/openapi.yaml`, `docs/openapi_test.go` | Publish and verify the machine-readable HTTP interface. |
 
 The intended dependency direction is:

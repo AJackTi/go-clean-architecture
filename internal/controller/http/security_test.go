@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AJackTi/go-clean-architecture/internal/item"
+	"github.com/AJackTi/go-clean-architecture/internal/item/httpapi"
 	"github.com/AJackTi/go-clean-architecture/pkg/auth"
 	"github.com/AJackTi/go-clean-architecture/pkg/ratelimit"
 	"github.com/gin-gonic/gin"
@@ -147,12 +148,51 @@ func TestInvalidCredentialsShareAnonymousRateBucket(t *testing.T) {
 	}
 }
 
+func TestIdempotencyScopeUsesDirectPeerAndNotForwardedHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &scopeServiceFake{base: &securityServiceFake{}}
+	router := NewRouter(service, nil)
+
+	first := scopedCreateRequest(t, router, "192.0.2.10:1000", "198.51.100.10", "same-key")
+	second := scopedCreateRequest(t, router, "192.0.2.11:1000", "198.51.100.10", "same-key")
+	third := scopedCreateRequest(t, router, "192.0.2.10:1000", "203.0.113.10", "same-key")
+	for name, response := range map[string]*httptest.ResponseRecorder{"first": first, "second": second, "third": third} {
+		if response.Code != http.StatusCreated {
+			t.Errorf("%s status = %d, want 201; body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	service.mu.Lock()
+	scopes := append([]string(nil), service.scopes...)
+	service.mu.Unlock()
+	if len(scopes) != 3 {
+		t.Fatalf("captured scopes = %d, want 3", len(scopes))
+	}
+	if scopes[0] == scopes[1] {
+		t.Errorf("different direct peers share idempotency scope %q", scopes[0])
+	}
+	if scopes[0] != scopes[2] {
+		t.Errorf("X-Forwarded-For changed direct-peer scope: %q vs %q", scopes[0], scopes[2])
+	}
+}
+
 func securityRequest(t *testing.T, router http.Handler, method, target, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, target, nil)
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func scopedCreateRequest(t *testing.T, router http.Handler, remoteAddr, forwardedFor, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/items", strings.NewReader(`{"name":"keyboard"}`))
+	request.RemoteAddr = remoteAddr
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(httpapi.IdempotencyKeyHeader, key)
+	request.Header.Set("X-Forwarded-For", forwardedFor)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	return response
@@ -168,6 +208,31 @@ type securityServiceFake struct {
 	calls         int
 	principal     auth.Principal
 	principalSeen bool
+}
+
+type scopeServiceFake struct {
+	base   *securityServiceFake
+	mu     sync.Mutex
+	scopes []string
+}
+
+func (s *scopeServiceFake) Create(ctx context.Context, input item.CreateInput) (item.Item, error) {
+	return s.base.Create(ctx, input)
+}
+
+func (s *scopeServiceFake) CreateIdempotent(ctx context.Context, _ item.CreateInput, _ string) (item.Item, bool, error) {
+	s.mu.Lock()
+	s.scopes = append(s.scopes, item.IdempotencyScopeFromContext(ctx))
+	s.mu.Unlock()
+	return item.Item{ID: uuid.New(), Name: "keyboard"}, false, nil
+}
+
+func (s *scopeServiceFake) Get(ctx context.Context, id uuid.UUID) (item.Item, error) {
+	return s.base.Get(ctx, id)
+}
+
+func (s *scopeServiceFake) List(ctx context.Context, params item.ListParams) (item.Page, error) {
+	return s.base.List(ctx, params)
 }
 
 func (s *securityServiceFake) Create(context.Context, item.CreateInput) (item.Item, error) {

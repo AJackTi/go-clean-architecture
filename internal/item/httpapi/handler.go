@@ -22,6 +22,16 @@ import (
 
 const defaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
 
+// IdempotencyKeyHeader is the exact request/response header used by the
+// create endpoint.
+const IdempotencyKeyHeader = "Idempotency-Key"
+
+// IdempotencyReplayedHeader is set to true when a successful response is a
+// replay of an earlier create.
+const IdempotencyReplayedHeader = "Idempotency-Replayed"
+
+const idempotencyKeyHeader = IdempotencyKeyHeader
+
 // Handler contains the HTTP endpoints for items.
 type Handler struct {
 	service      Service
@@ -73,6 +83,11 @@ func (h *Handler) Mount(group *gin.RouterGroup) { h.RegisterRoutes(group) }
 
 // Create handles POST /items.
 func (h *Handler) Create(c *gin.Context) {
+	idempotencyKey, hasIdempotencyKey, err := parseIdempotencyKey(c)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "bad_request", "invalid idempotency key")
+		return
+	}
 	var request *createRequest
 	if err := decodeStrictJSON(c, &request, h.maxBodyBytes); err != nil {
 		writeError(c, http.StatusBadRequest, "bad_request", "invalid request body")
@@ -84,14 +99,30 @@ func (h *Handler) Create(c *gin.Context) {
 	}
 
 	if h.service == nil {
+		if hasIdempotencyKey {
+			writeServiceError(c, item.ErrIdempotencyUnavailable)
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	created, err := h.service.Create(c.Request.Context(), item.CreateInput{
+	input := item.CreateInput{
 		Name:        request.Name,
 		Description: request.Description,
-	})
+	}
+	var created item.Item
+	replayed := false
+	if hasIdempotencyKey {
+		creator, ok := h.service.(item.IdempotentCreator)
+		if !ok {
+			writeServiceError(c, item.ErrIdempotencyUnavailable)
+			return
+		}
+		created, replayed, err = creator.CreateIdempotent(c.Request.Context(), input, idempotencyKey)
+	} else {
+		created, err = h.service.Create(c.Request.Context(), input)
+	}
 	if err != nil {
 		writeServiceError(c, err)
 		return
@@ -103,10 +134,20 @@ func (h *Handler) Create(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
+	if hasIdempotencyKey {
+		// Echo only after a successful atomic outcome. Error responses do not
+		// reflect potentially sensitive client tokens.
+		c.Header(idempotencyKeyHeader, idempotencyKey)
+	}
 
 	location := resourceLocation(c, created.ID)
 	c.Header("Location", location)
-	c.JSON(http.StatusCreated, dataResponse[item.Item]{Data: created})
+	status := http.StatusCreated
+	if replayed {
+		status = http.StatusOK
+		c.Header(IdempotencyReplayedHeader, "true")
+	}
+	c.JSON(status, dataResponse[item.Item]{Data: created})
 }
 
 // Get handles GET /items/:id.
@@ -191,6 +232,13 @@ type errorDetails struct {
 
 func writeServiceError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, item.ErrIdempotencyConflict):
+		writeError(c, http.StatusConflict, "idempotency_conflict", "idempotency key was used with a different request")
+	case errors.Is(err, item.ErrIdempotencyInProgress):
+		c.Header("Retry-After", "1")
+		writeError(c, http.StatusConflict, "idempotency_in_progress", "idempotency request is still in progress")
+	case errors.Is(err, item.ErrIdempotencyUnavailable), errors.Is(err, item.ErrIdempotencyState):
+		writeError(c, http.StatusServiceUnavailable, "idempotency_unavailable", "idempotent create is temporarily unavailable")
 	case errors.Is(err, item.ErrInvalidInput):
 		writeError(c, http.StatusUnprocessableEntity, "validation_error", "invalid item")
 	case errors.Is(err, item.ErrNotFound):
@@ -285,3 +333,25 @@ func parseQueryInt(values url.Values, key string, fallback int) (int, error) {
 }
 
 var errInvalidPagination = errors.New("invalid pagination")
+
+func parseIdempotencyKey(c *gin.Context) (string, bool, error) {
+	if c == nil || c.Request == nil {
+		return "", false, nil
+	}
+	var values []string
+	for headerName, headerValues := range c.Request.Header {
+		if strings.EqualFold(headerName, idempotencyKeyHeader) {
+			values = append(values, headerValues...)
+		}
+	}
+	if len(values) == 0 {
+		return "", false, nil
+	}
+	if len(values) != 1 {
+		return "", true, &item.ValidationError{Field: "idempotency_key", Reason: "must contain exactly one value"}
+	}
+	if err := item.ValidateIdempotencyKey(values[0]); err != nil {
+		return "", true, err
+	}
+	return values[0], true, nil
+}
