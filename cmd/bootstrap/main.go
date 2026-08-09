@@ -333,9 +333,12 @@ func discoverCopyrightHolder(root string, files []string) (string, error) {
 		if filepath.Clean(filepath.FromSlash(relative)) != "LICENSE" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(root, "LICENSE"))
+		data, readable, err := readTrackedTextFile(root, relative)
 		if err != nil {
 			return "", fmt.Errorf("read LICENSE: %w", err)
+		}
+		if !readable {
+			return "", nil
 		}
 		match := copyrightHolder.FindSubmatch(data)
 		if len(match) != 2 {
@@ -350,18 +353,22 @@ func discoverEmails(root string, files []string) ([]string, error) {
 	// Restrict discovery to policy documents.  Contribution guides commonly
 	// contain database URLs such as user:password@127.0.0.1, which are not
 	// maintainer addresses and must not make --email ambiguous.
-	knownDocs := map[string]bool{
-		"SECURITY.md":        true,
-		"CODE_OF_CONDUCT.md": true,
+	knownDocs := map[string]struct{}{
+		"SECURITY.md":        {},
+		"CODE_OF_CONDUCT.md": {},
 	}
 	seen := make(map[string]struct{})
 	for _, relative := range files {
-		if !knownDocs[filepath.Base(relative)] {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+		if _, known := knownDocs[clean]; !known {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		data, readable, err := readTrackedTextFile(root, relative)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", relative, err)
+		}
+		if !readable {
+			continue
 		}
 		for _, found := range emailPattern.FindAllString(string(data), -1) {
 			seen[found] = struct{}{}
@@ -373,6 +380,53 @@ func discoverEmails(root string, files []string) ([]string, error) {
 	}
 	sort.Strings(emails)
 	return emails, nil
+}
+
+// readTrackedTextFile reads a regular tracked file without following a
+// tracked symlink.  Bootstrap normally refuses a dirty worktree, but --force
+// deliberately permits one; os.Root keeps metadata discovery confined to the
+// checkout even if a path component is replaced with an escaping symlink while
+// the command is running.
+func readTrackedTextFile(root, relative string) ([]byte, bool, error) {
+	if _, err := safePath(root, relative); err != nil {
+		return nil, false, err
+	}
+	var err error
+	clean := filepath.Clean(filepath.FromSlash(relative))
+	worktree, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, false, fmt.Errorf("open worktree root: %w", err)
+	}
+	defer func() { _ = worktree.Close() }()
+
+	info, err := worktree.Lstat(clean)
+	if err != nil {
+		return nil, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxTextFile {
+		return nil, false, nil
+	}
+
+	file, err := worktree.Open(clean)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() || openedInfo.Size() > maxTextFile {
+		return nil, false, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxTextFile+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) > maxTextFile || !isText(data) {
+		return nil, false, nil
+	}
+	return data, true, nil
 }
 
 func makeReplacements(meta metadata, opts options) ([]replacement, error) {

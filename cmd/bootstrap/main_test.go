@@ -136,6 +136,82 @@ func TestRunIsIdempotentAfterOwnerAndAuthorCustomization(t *testing.T) {
 	}
 }
 
+func TestMetadataSkipsEscapingPolicySymlinks(t *testing.T) {
+	root := newFixture(t)
+	external := t.TempDir()
+	externalLicense := filepath.Join(external, "LICENSE")
+	externalSecurity := filepath.Join(external, "SECURITY.md")
+	if err := os.WriteFile(externalLicense, []byte("Copyright (c) 2099 External Maintainer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(externalSecurity, []byte("Contact external@example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for relative, target := range map[string]string{
+		"LICENSE":     externalLicense,
+		"SECURITY.md": externalSecurity,
+	} {
+		path := filepath.Join(root, relative)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := trackedFiles(root)
+	if err != nil {
+		t.Fatalf("trackedFiles() error = %v", err)
+	}
+	meta, err := readMetadata(root, files)
+	if err != nil {
+		t.Fatalf("readMetadata() error = %v", err)
+	}
+	if meta.oldAuthor != "" {
+		t.Fatalf("metadata read copyright holder through symlink: %q", meta.oldAuthor)
+	}
+	if len(meta.oldEmails) != 0 {
+		t.Fatalf("metadata read maintainer emails through symlink: %v", meta.oldEmails)
+	}
+
+	var output bytes.Buffer
+	if err := run([]string{
+		"--root", root,
+		"--module", "github.com/newowner/new-project",
+		"--slug", "new-project",
+		"--owner", "newowner",
+		"--author", "New Author",
+		"--force",
+	}, &output, &output); err != nil {
+		t.Fatalf("bootstrap with policy symlinks error = %v", err)
+	}
+	for relative, target := range map[string]string{
+		"LICENSE":     externalLicense,
+		"SECURITY.md": externalSecurity,
+	} {
+		path := filepath.Join(root, relative)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s was rewritten instead of remaining a symlink", relative)
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		wantTarget, targetErr := filepath.EvalSymlinks(target)
+		if err != nil || targetErr != nil || resolved != wantTarget {
+			t.Errorf("%s target = %q, want %q (err=%v, target err=%v)", relative, resolved, wantTarget, err, targetErr)
+		}
+	}
+	if got := string(readFile(t, externalLicense)); got != "Copyright (c) 2099 External Maintainer\n" {
+		t.Errorf("external LICENSE was modified: %q", got)
+	}
+	if got := string(readFile(t, externalSecurity)); got != "Contact external@example.com\n" {
+		t.Errorf("external SECURITY.md was modified: %q", got)
+	}
+}
+
 func TestRunRefusesDirtyWorktreeUnlessForced(t *testing.T) {
 	root := newFixture(t)
 	readmePath := filepath.Join(root, "README.md")

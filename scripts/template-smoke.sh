@@ -28,7 +28,7 @@ log() {
 
 show_source_file() {
 	local path="$1"
-	git -C "${root}" show "${source_ref}:${path}"
+	git -C "${root}" show "${source_commit}:${path}"
 }
 
 assert_file_contains() {
@@ -59,11 +59,12 @@ assert_template_token_absent() {
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "run from inside a Git worktree"
 source_ref="${TEMPLATE_SOURCE_REF:-HEAD}"
-git -C "${root}" rev-parse --verify --end-of-options "${source_ref}^{commit}" >/dev/null 2>&1 || \
+source_commit="$(git -C "${root}" rev-parse --verify --end-of-options "${source_ref}^{commit}" 2>/dev/null)" || \
 	fail "source ref '${source_ref}' is not a commit"
+[[ "${source_commit}" =~ ^[0-9a-fA-F]{40,64}$ ]] || fail "Git returned an invalid source commit"
 
 for required in go.mod README.md LICENSE cmd/bootstrap/main.go; do
-	git -C "${root}" cat-file -e "${source_ref}:${required}" 2>/dev/null || \
+	git -C "${root}" cat-file -e "${source_commit}:${required}" 2>/dev/null || \
 		fail "source ref '${source_ref}' is missing ${required}"
 done
 
@@ -90,7 +91,7 @@ old_author="$(show_source_file LICENSE | sed -n -E 's/^Copyright \(c\) [0-9-]+[[
 # source address survives in the generated repository.
 old_emails="$({
 	for policy in SECURITY.md CODE_OF_CONDUCT.md; do
-		if git -C "${root}" cat-file -e "${source_ref}:${policy}" 2>/dev/null; then
+		if git -C "${root}" cat-file -e "${source_commit}:${policy}" 2>/dev/null; then
 			show_source_file "${policy}"
 		fi
 	done
@@ -109,7 +110,7 @@ downstream="${temporary_root}/downstream"
 mkdir -p "${downstream}"
 
 log "archiving ${source_ref} from ${root}"
-git -C "${root}" archive --format=tar --output="${archive}" "${source_ref}" || \
+git -C "${root}" archive --format=tar --output="${archive}" "${source_commit}" -- || \
 	fail "could not archive source ref '${source_ref}'"
 tar -xf "${archive}" -C "${downstream}"
 
