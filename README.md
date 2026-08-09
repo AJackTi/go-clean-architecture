@@ -106,6 +106,13 @@ Runtime configuration is environment-first and validated before the app starts:
 | `OTEL_EXPORTER_OTLP_INSECURE` | `false` | Allows plaintext OTLP/HTTP outside production only. |
 | `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | Supported parent-based trace sampler. |
 | `OTEL_TRACES_SAMPLER_ARG` | `0.1` | Root-span sampling ratio from `0` to `1`. |
+| `AUTH_ENABLED` | `false` | Protects `/api/v1` with an optional Bearer credential. |
+| `AUTH_BEARER_TOKEN_SHA256` | Empty | SHA-256 hex digest of the service Bearer secret; required when auth is enabled. |
+| `RATE_LIMIT_ENABLED` | `false` | Enables a bounded in-process token bucket on `/api/v1`. |
+| `RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Token refill rate when limiting is enabled. |
+| `RATE_LIMIT_BURST` | `20` | Per-key burst capacity. |
+| `RATE_LIMIT_MAX_CLIENTS` | `10000` | Maximum resident limiter buckets. |
+| `RATE_LIMIT_IDLE_TTL` | `10m` | Idle bucket retention before cleanup. |
 
 Copy [`.env.example`](.env.example) for the complete local contract. Explicit
 HTTP collector URLs require `OTEL_EXPORTER_OTLP_INSECURE=true`; production
@@ -124,6 +131,24 @@ patterns, and correlates access events through `trace_id`, `span_id`, and
 collector I/O. Exported spans exclude queries, bodies, request headers, client
 addresses, and raw unmatched paths. Shutdown flushes the batch exporter within
 a bounded deadline.
+
+Authentication and rate limiting are deliberately opt-in. Set
+`AUTH_ENABLED=true` and provide a SHA-256 digest (for example,
+`printf %s 'a-long-random-secret' | sha256sum | awk '{print $1}'`) to protect only the
+versioned `/api/v1` routes; liveness, readiness, and the private metrics
+endpoint remain available to deployment tooling. The built-in verifier is a
+single service-to-service credential, not end-user authorization. Downstream
+services should replace it with an OIDC/JWT/JWKS authenticator when they need
+identity, issuer/audience checks, key rotation, or per-resource authorization.
+Missing or invalid credentials return `401` with a generic message and a
+`WWW-Authenticate` challenge; no credential is logged or echoed.
+
+Set `RATE_LIMIT_ENABLED=true` to add a bounded in-memory token bucket to the
+same API group. Authenticated principals receive separate buckets; failed or
+missing credentials share one anonymous bucket, and auth-disabled deployments
+use the direct peer IP (never `X-Forwarded-For`). A `429` response includes
+`Retry-After`. The limiter is per process and intentionally not a replacement
+for an API gateway or shared Redis policy in a multi-replica deployment.
 
 ## Development workflow
 
@@ -221,6 +246,9 @@ unmatched paths are deliberately excluded from logs. Handler panics return the
 stable internal-error envelope without exposing panic details or request
 headers; automatic trailing-slash redirects are disabled so malformed route
 spellings still receive an ID and access event.
+When the optional security controls are enabled, API errors use stable
+`unauthorized` and `rate_limited` codes and retain the same request-ID and
+privacy guarantees.
 
 ## Repository map
 
@@ -240,6 +268,8 @@ spellings still receive an ID and access event.
 | [`pkg/logger`](pkg/logger) | Process logging seam |
 | [`pkg/metrics`](pkg/metrics) | Isolated, bounded Prometheus HTTP metrics |
 | [`pkg/telemetry`](pkg/telemetry) | Optional OTLP/HTTP tracing provider |
+| [`pkg/auth`](pkg/auth) | Strict Bearer parsing and digest verification seam |
+| [`pkg/ratelimit`](pkg/ratelimit) | Bounded concurrent in-process token bucket |
 | [`db/migrations`](db/migrations) | Versioned PostgreSQL schema changes |
 | [`scripts/template-smoke.sh`](scripts/template-smoke.sh) | Verify a clean generated repository end to end |
 | [`.github`](.github) | CI, dependency updates, and contribution workflow |
@@ -302,6 +332,7 @@ tagging a version.
 - [Architecture decisions](docs/adr/)
 - [OpenAPI 3.1 contract](docs/openapi.yaml)
 - [HTTP observability guide](docs/observability.md)
+- [HTTP security controls](docs/security.md)
 - [Downstream template smoke test](docs/template-smoke.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)

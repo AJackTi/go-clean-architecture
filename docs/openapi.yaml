@@ -14,8 +14,9 @@ jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 servers:
   - url: http://127.0.0.1:8080
     description: Local development server
-# The template intentionally exposes these routes without an authentication
-# scheme. Downstream services should add their own security requirement.
+# Authentication is an opt-in runtime policy. The Bearer scheme documents the
+# header and reusable 401 response without making a fresh checkout require it;
+# enablement is controlled by AUTH_ENABLED.
 security: []
 tags:
   - name: Operations
@@ -81,6 +82,9 @@ paths:
                 status: unavailable
 
   /api/v1/items:
+    x-authentication:
+      optional: true
+      enabled-by: AUTH_ENABLED
     parameters:
       - $ref: '#/components/parameters/RequestID'
     post:
@@ -127,6 +131,8 @@ paths:
                   created_at: '2026-08-09T12:30:00Z'
         '400':
           $ref: '#/components/responses/BadRequestBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -135,6 +141,8 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '500':
           $ref: '#/components/responses/InternalError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
     get:
       tags: [Items]
@@ -169,10 +177,17 @@ paths:
                   has_more: false
         '400':
           $ref: '#/components/responses/BadRequestPagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /api/v1/items/{id}:
+    x-authentication:
+      optional: true
+      enabled-by: AUTH_ENABLED
     parameters:
       - $ref: '#/components/parameters/RequestID'
     get:
@@ -200,12 +215,25 @@ paths:
                   created_at: '2026-08-09T12:30:00Z'
         '400':
           $ref: '#/components/responses/BadRequestItemID'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque service token
+      description: >-
+        Optional service-to-service credential. Runtime enablement is controlled
+        by AUTH_ENABLED; replace the starter verifier with OIDC/JWT/JWKS for
+        end-user identity and authorization.
   parameters:
     RequestID:
       name: X-Request-ID
@@ -358,6 +386,51 @@ components:
             error:
               code: internal_error
               message: internal server error
+    Unauthorized:
+      description: Authentication is enabled and the Bearer credential is missing or invalid.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        WWW-Authenticate:
+          description: Bearer authentication challenge.
+          required: true
+          schema:
+            type: string
+            const: 'Bearer realm="api"'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: unauthorized
+              message: valid bearer credentials are required
+    TooManyRequests:
+      description: The optional in-process rate limiter has rejected the request.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Retry-After:
+          description: Minimum number of seconds before retrying.
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        RateLimit-Remaining:
+          description: Tokens remaining for the selected key.
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: rate_limited
+              message: request rate limit exceeded
   schemas:
     Item:
       type: object
@@ -456,7 +529,7 @@ components:
       properties:
         code:
           type: string
-          enum: [bad_request, validation_error, not_found, conflict, internal_error]
+          enum: [bad_request, validation_error, not_found, conflict, unauthorized, rate_limited, internal_error]
           description: Stable machine-readable error code.
         message:
           type: string

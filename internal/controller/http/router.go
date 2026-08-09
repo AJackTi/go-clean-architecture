@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/AJackTi/go-clean-architecture/internal/item/httpapi"
+	"github.com/AJackTi/go-clean-architecture/pkg/auth"
 	"github.com/AJackTi/go-clean-architecture/pkg/metrics"
+	"github.com/AJackTi/go-clean-architecture/pkg/ratelimit"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -30,6 +32,8 @@ type routerConfig struct {
 	metrics    *metrics.Metrics
 	tracer     trace.Tracer
 	propagator propagation.TextMapPropagator
+	auth       auth.Authenticator
+	limiter    *ratelimit.Limiter
 }
 
 // RouterOption configures optional transport-owned diagnostics without
@@ -55,6 +59,27 @@ func WithTracing(tracer trace.Tracer, propagator propagation.TextMapPropagator) 
 		}
 		config.tracer = tracer
 		config.propagator = propagator
+	}
+}
+
+// WithAuthenticator protects versioned API routes with the supplied
+// transport-neutral authenticator. Health and metrics endpoints remain
+// reachable for deployment probes and private scrape infrastructure.
+func WithAuthenticator(value auth.Authenticator) RouterOption {
+	return func(config *routerConfig) {
+		if config != nil {
+			config.auth = value
+		}
+	}
+}
+
+// WithRateLimiter enables bounded in-process request limiting for versioned
+// API routes. A nil limiter leaves rate limiting disabled.
+func WithRateLimiter(value *ratelimit.Limiter) RouterOption {
+	return func(config *routerConfig) {
+		if config != nil {
+			config.limiter = value
+		}
 	}
 }
 
@@ -96,6 +121,9 @@ func buildRouter(items httpapi.Service, readiness ReadinessCheck, config routerC
 	}
 	middleware = append(middleware, sanitizedRecovery())
 	router.Use(middleware...)
+	if config.auth != nil || config.limiter != nil {
+		router.Use(apiSecurityMiddleware(config.auth, config.limiter))
+	}
 	_ = router.SetTrustedProxies(nil)
 
 	router.GET(livenessPath, func(c *gin.Context) {
@@ -114,7 +142,8 @@ func buildRouter(items httpapi.Service, readiness ReadinessCheck, config routerC
 		router.GET(metricsPath, gin.WrapH(config.metrics.Handler()))
 	}
 
-	httpapi.New(items).RegisterRoutes(router.Group("/api/v1"))
+	apiGroup := router.Group("/api/v1")
+	httpapi.New(items).RegisterRoutes(apiGroup)
 	return router
 }
 

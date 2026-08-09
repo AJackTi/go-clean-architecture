@@ -15,9 +15,11 @@ import (
 	httpcontroller "github.com/AJackTi/go-clean-architecture/internal/controller/http"
 	"github.com/AJackTi/go-clean-architecture/internal/item"
 	itempostgres "github.com/AJackTi/go-clean-architecture/internal/item/postgres"
+	"github.com/AJackTi/go-clean-architecture/pkg/auth"
 	"github.com/AJackTi/go-clean-architecture/pkg/httpserver"
 	"github.com/AJackTi/go-clean-architecture/pkg/logger"
 	"github.com/AJackTi/go-clean-architecture/pkg/metrics"
+	"github.com/AJackTi/go-clean-architecture/pkg/ratelimit"
 	"github.com/AJackTi/go-clean-architecture/pkg/telemetry"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,6 +94,27 @@ func RunContext(ctx context.Context, cfg *config.Config) (runErr error) {
 	if cfg.MetricsEnabled {
 		httpMetrics = metrics.New()
 	}
+	var authenticator auth.Authenticator
+	if cfg.AuthEnabled {
+		bearerVerifier, verifierErr := auth.NewBearerSHA256(cfg.AuthBearerTokenSHA256)
+		if verifierErr != nil {
+			return fmt.Errorf("app: initialize authentication: %w", verifierErr)
+		}
+		authenticator = bearerVerifier
+	}
+	var rateLimiter *ratelimit.Limiter
+	if cfg.RateLimitEnabled {
+		rateLimiter, err = ratelimit.New(ratelimit.Config{
+			Capacity:   cfg.RateLimitBurst,
+			RefillRate: cfg.RateLimitRequestsPerSecond,
+			MaxClients: cfg.RateLimitMaxClients,
+			IdleTTL:    cfg.RateLimitIdleTTL,
+			Overflow:   ratelimit.RejectNew,
+		})
+		if err != nil {
+			return fmt.Errorf("app: initialize rate limiter: %w", err)
+		}
+	}
 	handler := httpcontroller.NewRouter(
 		service,
 		pool.Ping,
@@ -100,6 +123,8 @@ func RunContext(ctx context.Context, cfg *config.Config) (runErr error) {
 			tracing.Tracer(httpcontroller.InstrumentationName),
 			propagation.TraceContext{},
 		),
+		httpcontroller.WithAuthenticator(authenticator),
+		httpcontroller.WithRateLimiter(rateLimiter),
 	)
 	server := httpserver.New(
 		handler,

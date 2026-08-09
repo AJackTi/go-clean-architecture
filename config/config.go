@@ -7,12 +7,15 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -26,25 +29,43 @@ const (
 	defaultOTELServiceName      = "github.com/AJackTi/go-clean-architecture"
 	defaultOTELTracesSampler    = "parentbased_traceidratio"
 	defaultOTELTracesSamplerArg = 0.1
+	defaultAuthEnabled          = false
+	defaultRateLimitEnabled     = false
+	defaultRateLimitRPS         = 10.0
+	defaultRateLimitBurst       = 20
+	defaultRateLimitMaxClients  = 10000
+	defaultRateLimitIdleTTL     = 10 * time.Minute
 	maxOTELServiceNameBytes     = 128
 	maxOTELSamplerBytes         = 64
 	maxOTLPEndpointBytes        = 2048
+	maxAuthDigestBytes          = sha256.Size * 2
+	maxRateLimitRPS             = 100000.0
+	maxRateLimitBurst           = 100000
+	maxRateLimitMaxClients      = 1000000
+	maxRateLimitIdleTTL         = 24 * time.Hour
 )
 
 // Config contains the runtime settings required by the HTTP application.
 // Values are deliberately flat so the composition root has one obvious
 // source of truth for each dependency.
 type Config struct {
-	AppEnv                   string
-	HTTPPort                 string
-	LogLevel                 string
-	DatabaseURL              string
-	MetricsEnabled           bool
-	OTELServiceName          string
-	OTELExporterOTLPEndpoint string
-	OTELExporterOTLPInsecure bool
-	OTELTracesSampler        string
-	OTELTracesSamplerArg     float64
+	AppEnv                     string
+	HTTPPort                   string
+	LogLevel                   string
+	DatabaseURL                string
+	MetricsEnabled             bool
+	OTELServiceName            string
+	OTELExporterOTLPEndpoint   string
+	OTELExporterOTLPInsecure   bool
+	OTELTracesSampler          string
+	OTELTracesSamplerArg       float64
+	AuthEnabled                bool
+	AuthBearerTokenSHA256      string
+	RateLimitEnabled           bool
+	RateLimitRequestsPerSecond float64
+	RateLimitBurst             int
+	RateLimitMaxClients        int
+	RateLimitIdleTTL           time.Duration
 }
 
 // NewConfig is kept as the conventional constructor name used by existing
@@ -68,6 +89,8 @@ func load(lookup func(string) (string, bool)) (*Config, error) {
 		"OTEL_SERVICE_NAME",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_TRACES_SAMPLER",
+		"AUTH_BEARER_TOKEN_SHA256",
+		"RATE_LIMIT_IDLE_TTL",
 	} {
 		if value, ok := lookup(key); ok {
 			if err := validateText(key, value); err != nil {
@@ -93,18 +116,50 @@ func load(lookup func(string) (string, bool)) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	authEnabled, err := boolValueOrDefault(lookup, "AUTH_ENABLED", defaultAuthEnabled)
+	if err != nil {
+		return nil, err
+	}
+	authDigest := strings.ToLower(strings.TrimSpace(valueOrDefault(lookup, "AUTH_BEARER_TOKEN_SHA256", "")))
+	rateLimitEnabled, err := boolValueOrDefault(lookup, "RATE_LIMIT_ENABLED", defaultRateLimitEnabled)
+	if err != nil {
+		return nil, err
+	}
+	rateLimitRPS, err := floatValueOrDefault(lookup, "RATE_LIMIT_REQUESTS_PER_SECOND", defaultRateLimitRPS)
+	if err != nil {
+		return nil, err
+	}
+	rateLimitBurst, err := intValueOrDefault(lookup, "RATE_LIMIT_BURST", defaultRateLimitBurst)
+	if err != nil {
+		return nil, err
+	}
+	rateLimitMaxClients, err := intValueOrDefault(lookup, "RATE_LIMIT_MAX_CLIENTS", defaultRateLimitMaxClients)
+	if err != nil {
+		return nil, err
+	}
+	rateLimitIdleTTL, err := durationValueOrDefault(lookup, "RATE_LIMIT_IDLE_TTL", defaultRateLimitIdleTTL)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
-		AppEnv:                   strings.TrimSpace(valueOrDefault(lookup, "APP_ENV", defaultAppEnv)),
-		HTTPPort:                 strings.TrimSpace(valueOrDefault(lookup, "HTTP_PORT", defaultHTTPPort)),
-		LogLevel:                 strings.TrimSpace(valueOrDefault(lookup, "LOG_LEVEL", defaultLogLevel)),
-		DatabaseURL:              strings.TrimSpace(databaseURL),
-		MetricsEnabled:           metricsEnabled,
-		OTELServiceName:          strings.TrimSpace(valueOrDefault(lookup, "OTEL_SERVICE_NAME", defaultOTELServiceName)),
-		OTELExporterOTLPEndpoint: strings.TrimSpace(valueOrDefault(lookup, "OTEL_EXPORTER_OTLP_ENDPOINT", "")),
-		OTELExporterOTLPInsecure: otelInsecure,
-		OTELTracesSampler:        strings.TrimSpace(valueOrDefault(lookup, "OTEL_TRACES_SAMPLER", defaultOTELTracesSampler)),
-		OTELTracesSamplerArg:     otelSamplerArg,
+		AppEnv:                     strings.TrimSpace(valueOrDefault(lookup, "APP_ENV", defaultAppEnv)),
+		HTTPPort:                   strings.TrimSpace(valueOrDefault(lookup, "HTTP_PORT", defaultHTTPPort)),
+		LogLevel:                   strings.TrimSpace(valueOrDefault(lookup, "LOG_LEVEL", defaultLogLevel)),
+		DatabaseURL:                strings.TrimSpace(databaseURL),
+		MetricsEnabled:             metricsEnabled,
+		OTELServiceName:            strings.TrimSpace(valueOrDefault(lookup, "OTEL_SERVICE_NAME", defaultOTELServiceName)),
+		OTELExporterOTLPEndpoint:   strings.TrimSpace(valueOrDefault(lookup, "OTEL_EXPORTER_OTLP_ENDPOINT", "")),
+		OTELExporterOTLPInsecure:   otelInsecure,
+		OTELTracesSampler:          strings.TrimSpace(valueOrDefault(lookup, "OTEL_TRACES_SAMPLER", defaultOTELTracesSampler)),
+		OTELTracesSamplerArg:       otelSamplerArg,
+		AuthEnabled:                authEnabled,
+		AuthBearerTokenSHA256:      authDigest,
+		RateLimitEnabled:           rateLimitEnabled,
+		RateLimitRequestsPerSecond: rateLimitRPS,
+		RateLimitBurst:             rateLimitBurst,
+		RateLimitMaxClients:        rateLimitMaxClients,
+		RateLimitIdleTTL:           rateLimitIdleTTL,
 	}
 
 	if cfg.AppEnv == "production" && !databaseURLSet {
@@ -159,6 +214,36 @@ func floatValueOrDefault(lookup func(string) (string, bool), key string, fallbac
 	return parsed, nil
 }
 
+func intValueOrDefault(lookup func(string) (string, bool), key string, fallback int) (int, error) {
+	value, ok := lookup(key)
+	if !ok {
+		return fallback, nil
+	}
+	if err := validateText(key, value); err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be an integer", key)
+	}
+	return parsed, nil
+}
+
+func durationValueOrDefault(lookup func(string) (string, bool), key string, fallback time.Duration) (time.Duration, error) {
+	value, ok := lookup(key)
+	if !ok {
+		return fallback, nil
+	}
+	if err := validateText(key, value); err != nil {
+		return 0, err
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be a duration", key)
+	}
+	return parsed, nil
+}
+
 // Validate checks settings that would otherwise produce a confusing startup
 // failure.  Database URL syntax is intentionally left to the database driver;
 // this package only guarantees that it is present.
@@ -174,6 +259,7 @@ func (c Config) Validate() error {
 		{name: "OTEL_SERVICE_NAME", value: c.OTELServiceName},
 		{name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: c.OTELExporterOTLPEndpoint},
 		{name: "OTEL_TRACES_SAMPLER", value: c.OTELTracesSampler},
+		{name: "AUTH_BEARER_TOKEN_SHA256", value: c.AuthBearerTokenSHA256},
 	}
 	for _, setting := range textSettings {
 		if err := validateText(setting.name, setting.value); err != nil {
@@ -188,6 +274,14 @@ func (c Config) Validate() error {
 	}
 	if len(c.OTELExporterOTLPEndpoint) > maxOTLPEndpointBytes {
 		return fmt.Errorf("config: OTEL_EXPORTER_OTLP_ENDPOINT must be at most %d bytes", maxOTLPEndpointBytes)
+	}
+	if c.AuthBearerTokenSHA256 != "" {
+		if len(c.AuthBearerTokenSHA256) != maxAuthDigestBytes {
+			return fmt.Errorf("config: AUTH_BEARER_TOKEN_SHA256 must be a %d-character SHA-256 hex digest", maxAuthDigestBytes)
+		}
+		if _, err := hex.DecodeString(c.AuthBearerTokenSHA256); err != nil {
+			return fmt.Errorf("config: AUTH_BEARER_TOKEN_SHA256 must be hexadecimal")
+		}
 	}
 
 	if strings.TrimSpace(c.DatabaseURL) == "" {
@@ -223,6 +317,41 @@ func (c Config) Validate() error {
 		}
 		if endpointUsesHTTP(c.OTELExporterOTLPEndpoint) {
 			return fmt.Errorf("config: OTEL_EXPORTER_OTLP_ENDPOINT must use HTTPS in production")
+		}
+	}
+	if c.AuthEnabled && c.AuthBearerTokenSHA256 == "" {
+		return fmt.Errorf("config: AUTH_BEARER_TOKEN_SHA256 must be set when AUTH_ENABLED is true")
+	}
+	if c.RateLimitEnabled {
+		if math.IsNaN(c.RateLimitRequestsPerSecond) || math.IsInf(c.RateLimitRequestsPerSecond, 0) ||
+			c.RateLimitRequestsPerSecond <= 0 || c.RateLimitRequestsPerSecond > maxRateLimitRPS {
+			return fmt.Errorf("config: RATE_LIMIT_REQUESTS_PER_SECOND must be greater than 0 and at most %g", maxRateLimitRPS)
+		}
+		if c.RateLimitBurst < 1 || c.RateLimitBurst > maxRateLimitBurst {
+			return fmt.Errorf("config: RATE_LIMIT_BURST must be between 1 and %d", maxRateLimitBurst)
+		}
+		if c.RateLimitMaxClients < 1 || c.RateLimitMaxClients > maxRateLimitMaxClients {
+			return fmt.Errorf("config: RATE_LIMIT_MAX_CLIENTS must be between 1 and %d", maxRateLimitMaxClients)
+		}
+		if c.RateLimitIdleTTL < time.Second || c.RateLimitIdleTTL > maxRateLimitIdleTTL {
+			return fmt.Errorf("config: RATE_LIMIT_IDLE_TTL must be between 1s and %s", maxRateLimitIdleTTL)
+		}
+	} else {
+		// Zero values keep old Config literals source-compatible. Non-zero
+		// values are still checked when supplied so typos cannot silently
+		// become an invalid limiter after a later enablement.
+		if math.IsNaN(c.RateLimitRequestsPerSecond) || math.IsInf(c.RateLimitRequestsPerSecond, 0) ||
+			c.RateLimitRequestsPerSecond < 0 || c.RateLimitRequestsPerSecond > maxRateLimitRPS {
+			return fmt.Errorf("config: RATE_LIMIT_REQUESTS_PER_SECOND is outside its allowed range")
+		}
+		if c.RateLimitBurst < 0 || c.RateLimitBurst > maxRateLimitBurst {
+			return fmt.Errorf("config: RATE_LIMIT_BURST is outside its allowed range")
+		}
+		if c.RateLimitMaxClients < 0 || c.RateLimitMaxClients > maxRateLimitMaxClients {
+			return fmt.Errorf("config: RATE_LIMIT_MAX_CLIENTS is outside its allowed range")
+		}
+		if c.RateLimitIdleTTL < 0 || c.RateLimitIdleTTL > maxRateLimitIdleTTL {
+			return fmt.Errorf("config: RATE_LIMIT_IDLE_TTL is outside its allowed range")
 		}
 	}
 

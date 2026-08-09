@@ -41,9 +41,10 @@ type openAPIDocument struct {
 	Security   []map[string][]string                 `json:"security"`
 	Paths      map[string]map[string]json.RawMessage `json:"paths"`
 	Components struct {
-		Parameters map[string]json.RawMessage `json:"parameters"`
-		Responses  map[string]json.RawMessage `json:"responses"`
-		Schemas    map[string]json.RawMessage `json:"schemas"`
+		Parameters      map[string]json.RawMessage `json:"parameters"`
+		Responses       map[string]json.RawMessage `json:"responses"`
+		Schemas         map[string]json.RawMessage `json:"schemas"`
+		SecuritySchemes map[string]json.RawMessage `json:"securitySchemes"`
 	} `json:"components"`
 }
 
@@ -129,9 +130,9 @@ func TestOpenAPIContractDocumentsStableResponses(t *testing.T) {
 	want := map[string][]string{
 		"get /api/health":        {"200"},
 		"get /api/healthz":       {"200", "503"},
-		"post /api/v1/items":     {"201", "400", "404", "409", "422", "500"},
-		"get /api/v1/items":      {"200", "400", "500"},
-		"get /api/v1/items/{id}": {"200", "400", "404", "500"},
+		"post /api/v1/items":     {"201", "400", "401", "404", "409", "422", "429", "500"},
+		"get /api/v1/items":      {"200", "400", "401", "429", "500"},
+		"get /api/v1/items/{id}": {"200", "400", "401", "404", "429", "500"},
 	}
 
 	for key, wantStatuses := range want {
@@ -200,11 +201,44 @@ func TestOpenAPIContractCapturesDomainAndTransportPolicy(t *testing.T) {
 
 	errorDetails := componentSchema(t, document, "ErrorDetails")
 	assertClosedObject(t, "ErrorDetails", errorDetails, "code", "message")
-	wantCodes := []string{"bad_request", "conflict", "internal_error", "not_found", "validation_error"}
+	wantCodes := []string{"bad_request", "conflict", "internal_error", "not_found", "rate_limited", "unauthorized", "validation_error"}
 	gotCodes := append([]string(nil), errorDetails.Properties["code"].Enum...)
 	sort.Strings(gotCodes)
 	if strings.Join(gotCodes, ",") != strings.Join(wantCodes, ",") {
 		t.Errorf("ErrorDetails.code enum = %v, want %v", gotCodes, wantCodes)
+	}
+}
+
+func TestOpenAPIContractDocumentsOptionalBearerSecurity(t *testing.T) {
+	document, _ := loadOpenAPI(t)
+	rawScheme, exists := document.Components.SecuritySchemes["BearerAuth"]
+	if !exists {
+		t.Fatal("components.securitySchemes.BearerAuth is missing")
+	}
+	var scheme struct {
+		Type         string `json:"type"`
+		Scheme       string `json:"scheme"`
+		BearerFormat string `json:"bearerFormat"`
+	}
+	decodeJSON(t, rawScheme, &scheme)
+	if scheme.Type != "http" || scheme.Scheme != "bearer" || scheme.BearerFormat == "" {
+		t.Errorf("BearerAuth scheme = %#v, want HTTP bearer scheme", scheme)
+	}
+	for _, path := range []string{"/api/v1/items", "/api/v1/items/{id}"} {
+		var extension struct {
+			Optional bool   `json:"optional"`
+			Enabled  string `json:"enabled-by"`
+		}
+		rawPath := document.Paths[path]
+		rawExtension, exists := rawPath["x-authentication"]
+		if !exists {
+			t.Errorf("%s has no x-authentication extension", path)
+			continue
+		}
+		decodeJSON(t, rawExtension, &extension)
+		if !extension.Optional || extension.Enabled != "AUTH_ENABLED" {
+			t.Errorf("%s authentication extension = %#v", path, extension)
+		}
 	}
 }
 

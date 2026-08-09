@@ -1,9 +1,11 @@
 package config
 
 import (
+	"crypto/sha256"
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadUsesDevelopmentDefaults(t *testing.T) {
@@ -44,20 +46,36 @@ func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	if cfg.OTELTracesSamplerArg != defaultOTELTracesSamplerArg {
 		t.Errorf("OTELTracesSamplerArg = %v, want %v", cfg.OTELTracesSamplerArg, defaultOTELTracesSamplerArg)
 	}
+	if cfg.AuthEnabled != defaultAuthEnabled || cfg.AuthBearerTokenSHA256 != "" {
+		t.Errorf("auth defaults = enabled:%t digest:%q, want disabled and empty", cfg.AuthEnabled, cfg.AuthBearerTokenSHA256)
+	}
+	if cfg.RateLimitEnabled != defaultRateLimitEnabled || cfg.RateLimitRequestsPerSecond != defaultRateLimitRPS ||
+		cfg.RateLimitBurst != defaultRateLimitBurst || cfg.RateLimitMaxClients != defaultRateLimitMaxClients ||
+		cfg.RateLimitIdleTTL != defaultRateLimitIdleTTL {
+		t.Errorf("rate-limit defaults = enabled:%t rps:%v burst:%d clients:%d ttl:%s", cfg.RateLimitEnabled,
+			cfg.RateLimitRequestsPerSecond, cfg.RateLimitBurst, cfg.RateLimitMaxClients, cfg.RateLimitIdleTTL)
+	}
 }
 
 func TestLoadReadsEnvironment(t *testing.T) {
 	values := map[string]string{
-		"APP_ENV":                     "test",
-		"HTTP_PORT":                   "18080",
-		"LOG_LEVEL":                   "debug",
-		"DATABASE_URL":                "postgres://tester@db:5432/test?sslmode=disable",
-		"METRICS_ENABLED":             "true",
-		"OTEL_SERVICE_NAME":           "orders-api",
-		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318/v1/traces",
-		"OTEL_EXPORTER_OTLP_INSECURE": "true",
-		"OTEL_TRACES_SAMPLER":         defaultOTELTracesSampler,
-		"OTEL_TRACES_SAMPLER_ARG":     "0.25",
+		"APP_ENV":                        "test",
+		"HTTP_PORT":                      "18080",
+		"LOG_LEVEL":                      "debug",
+		"DATABASE_URL":                   "postgres://tester@db:5432/test?sslmode=disable",
+		"METRICS_ENABLED":                "true",
+		"OTEL_SERVICE_NAME":              "orders-api",
+		"OTEL_EXPORTER_OTLP_ENDPOINT":    "http://collector:4318/v1/traces",
+		"OTEL_EXPORTER_OTLP_INSECURE":    "true",
+		"OTEL_TRACES_SAMPLER":            defaultOTELTracesSampler,
+		"OTEL_TRACES_SAMPLER_ARG":        "0.25",
+		"AUTH_ENABLED":                   "true",
+		"AUTH_BEARER_TOKEN_SHA256":       strings.Repeat("ab", sha256.Size),
+		"RATE_LIMIT_ENABLED":             "true",
+		"RATE_LIMIT_REQUESTS_PER_SECOND": "12.5",
+		"RATE_LIMIT_BURST":               "30",
+		"RATE_LIMIT_MAX_CLIENTS":         "500",
+		"RATE_LIMIT_IDLE_TTL":            "15m",
 	}
 	lookup := func(key string) (string, bool) {
 		value, ok := values[key]
@@ -74,7 +92,10 @@ func TestLoadReadsEnvironment(t *testing.T) {
 		!cfg.MetricsEnabled || cfg.OTELServiceName != values["OTEL_SERVICE_NAME"] ||
 		cfg.OTELExporterOTLPEndpoint != values["OTEL_EXPORTER_OTLP_ENDPOINT"] ||
 		!cfg.OTELExporterOTLPInsecure || cfg.OTELTracesSampler != defaultOTELTracesSampler ||
-		cfg.OTELTracesSamplerArg != 0.25 {
+		cfg.OTELTracesSamplerArg != 0.25 || !cfg.AuthEnabled ||
+		cfg.AuthBearerTokenSHA256 != values["AUTH_BEARER_TOKEN_SHA256"] || !cfg.RateLimitEnabled ||
+		cfg.RateLimitRequestsPerSecond != 12.5 || cfg.RateLimitBurst != 30 ||
+		cfg.RateLimitMaxClients != 500 || cfg.RateLimitIdleTTL != 15*time.Minute {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
@@ -101,6 +122,16 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "sampler argument above one", values: map[string]string{"OTEL_TRACES_SAMPLER_ARG": "1.01"}},
 		{name: "NaN sampler argument", values: map[string]string{"OTEL_TRACES_SAMPLER_ARG": "NaN"}},
 		{name: "infinite sampler argument", values: map[string]string{"OTEL_TRACES_SAMPLER_ARG": "+Inf"}},
+		{name: "invalid auth flag", values: map[string]string{"AUTH_ENABLED": "sometimes"}},
+		{name: "auth enabled without digest", values: map[string]string{"AUTH_ENABLED": "true"}},
+		{name: "short auth digest", values: map[string]string{"AUTH_ENABLED": "true", "AUTH_BEARER_TOKEN_SHA256": "abcd"}},
+		{name: "non-hex auth digest", values: map[string]string{"AUTH_ENABLED": "true", "AUTH_BEARER_TOKEN_SHA256": strings.Repeat("zz", sha256.Size)}},
+		{name: "invalid rate flag", values: map[string]string{"RATE_LIMIT_ENABLED": "sometimes"}},
+		{name: "non-numeric rate", values: map[string]string{"RATE_LIMIT_REQUESTS_PER_SECOND": "fast"}},
+		{name: "zero enabled rate", values: map[string]string{"RATE_LIMIT_ENABLED": "true", "RATE_LIMIT_REQUESTS_PER_SECOND": "0"}},
+		{name: "negative burst", values: map[string]string{"RATE_LIMIT_ENABLED": "true", "RATE_LIMIT_BURST": "-1"}},
+		{name: "oversized clients", values: map[string]string{"RATE_LIMIT_ENABLED": "true", "RATE_LIMIT_MAX_CLIENTS": "1000001"}},
+		{name: "invalid idle ttl", values: map[string]string{"RATE_LIMIT_ENABLED": "true", "RATE_LIMIT_IDLE_TTL": "500ms"}},
 		{name: "oversized service name", values: map[string]string{"OTEL_SERVICE_NAME": strings.Repeat("a", maxOTELServiceNameBytes+1)}},
 		{name: "oversized sampler", values: map[string]string{"OTEL_TRACES_SAMPLER": strings.Repeat("a", maxOTELSamplerBytes+1)}},
 		{name: "oversized endpoint", values: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "https://" + strings.Repeat("a", maxOTLPEndpointBytes)}},
@@ -188,6 +219,16 @@ func TestConfigValidateRejectsInvalidTelemetryValues(t *testing.T) {
 				t.Fatal("Validate() succeeded; want error")
 			}
 		})
+	}
+}
+
+func TestConfigValidateRejectsNonFiniteDisabledRate(t *testing.T) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		cfg := validConfig()
+		cfg.RateLimitRequestsPerSecond = value
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() accepted disabled non-finite rate %v", value)
+		}
 	}
 }
 
@@ -297,16 +338,23 @@ func TestLoadRequiresExplicitProductionDatabaseURL(t *testing.T) {
 
 func TestLoadNormalizesWhitespace(t *testing.T) {
 	values := map[string]string{
-		"APP_ENV":                     " test ",
-		"HTTP_PORT":                   " 18080 ",
-		"LOG_LEVEL":                   " info ",
-		"DATABASE_URL":                " postgres://localhost/test ",
-		"METRICS_ENABLED":             " true ",
-		"OTEL_SERVICE_NAME":           " orders-api ",
-		"OTEL_EXPORTER_OTLP_ENDPOINT": " http://collector:4318 ",
-		"OTEL_EXPORTER_OTLP_INSECURE": " true ",
-		"OTEL_TRACES_SAMPLER":         " parentbased_traceidratio ",
-		"OTEL_TRACES_SAMPLER_ARG":     " 0.5 ",
+		"APP_ENV":                        " test ",
+		"HTTP_PORT":                      " 18080 ",
+		"LOG_LEVEL":                      " info ",
+		"DATABASE_URL":                   " postgres://localhost/test ",
+		"METRICS_ENABLED":                " true ",
+		"OTEL_SERVICE_NAME":              " orders-api ",
+		"OTEL_EXPORTER_OTLP_ENDPOINT":    " http://collector:4318 ",
+		"OTEL_EXPORTER_OTLP_INSECURE":    " true ",
+		"OTEL_TRACES_SAMPLER":            " parentbased_traceidratio ",
+		"OTEL_TRACES_SAMPLER_ARG":        " 0.5 ",
+		"AUTH_ENABLED":                   " true ",
+		"AUTH_BEARER_TOKEN_SHA256":       " " + strings.Repeat("ab", sha256.Size) + " ",
+		"RATE_LIMIT_ENABLED":             " true ",
+		"RATE_LIMIT_REQUESTS_PER_SECOND": " 12.5 ",
+		"RATE_LIMIT_BURST":               " 30 ",
+		"RATE_LIMIT_MAX_CLIENTS":         " 500 ",
+		"RATE_LIMIT_IDLE_TTL":            " 15m ",
 	}
 	cfg, err := load(func(key string) (string, bool) {
 		value, ok := values[key]
@@ -319,7 +367,9 @@ func TestLoadNormalizesWhitespace(t *testing.T) {
 		cfg.DatabaseURL != "postgres://localhost/test" || !cfg.MetricsEnabled ||
 		cfg.OTELServiceName != "orders-api" || cfg.OTELExporterOTLPEndpoint != "http://collector:4318" ||
 		!cfg.OTELExporterOTLPInsecure || cfg.OTELTracesSampler != defaultOTELTracesSampler ||
-		cfg.OTELTracesSamplerArg != 0.5 {
+		cfg.OTELTracesSamplerArg != 0.5 || !cfg.AuthEnabled || cfg.AuthBearerTokenSHA256 != strings.Repeat("ab", sha256.Size) ||
+		!cfg.RateLimitEnabled || cfg.RateLimitRequestsPerSecond != 12.5 || cfg.RateLimitBurst != 30 ||
+		cfg.RateLimitMaxClients != 500 || cfg.RateLimitIdleTTL != 15*time.Minute {
 		t.Fatalf("config was not normalized: %#v", cfg)
 	}
 }
