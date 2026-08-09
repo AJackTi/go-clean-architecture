@@ -28,7 +28,13 @@ func NewRouter(items httpapi.Service, readiness ReadinessCheck) *gin.Engine {
 
 func newRouter(items httpapi.Service, readiness ReadinessCheck, accessLog accessLogger) *gin.Engine {
 	router := gin.New()
-	router.Use(observabilityMiddleware(accessLog), gin.Recovery())
+	// Route-shape errors should pass through the same middleware as every
+	// other response. Gin's automatic trailing-slash/fixed-path redirects run
+	// before the handler chain and would otherwise omit both the request ID and
+	// access event.
+	router.RedirectTrailingSlash = false
+	router.RedirectFixedPath = false
+	router.Use(observabilityMiddleware(accessLog), sanitizedRecovery())
 	_ = router.SetTrustedProxies(nil)
 
 	router.GET(livenessPath, func(c *gin.Context) {

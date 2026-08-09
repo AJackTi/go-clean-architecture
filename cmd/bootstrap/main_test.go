@@ -141,10 +141,10 @@ func TestMetadataSkipsEscapingPolicySymlinks(t *testing.T) {
 	external := t.TempDir()
 	externalLicense := filepath.Join(external, "LICENSE")
 	externalSecurity := filepath.Join(external, "SECURITY.md")
-	if err := os.WriteFile(externalLicense, []byte("Copyright (c) 2099 External Maintainer\n"), 0o644); err != nil {
+	if err := os.WriteFile(externalLicense, []byte("Copyright (c) 2099 External Maintainer\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(externalSecurity, []byte("Contact external@example.com\n"), 0o644); err != nil {
+	if err := os.WriteFile(externalSecurity, []byte("Contact external@example.com\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for relative, target := range map[string]string{

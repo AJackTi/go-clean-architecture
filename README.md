@@ -188,7 +188,10 @@ value is preserved; missing, malformed, oversized, or duplicate values are
 replaced with a canonical UUIDv4. The HTTP adapter emits one structured access
 event through the process logger with the request ID, method, route pattern,
 status, response bytes, and duration. Query strings, request bodies, and raw
-unmatched paths are deliberately excluded from logs.
+unmatched paths are deliberately excluded from logs. Handler panics return the
+stable internal-error envelope without exposing panic details or request
+headers; automatic trailing-slash redirects are disabled so malformed route
+spellings still receive an ID and access event.
 
 ## Repository map
 

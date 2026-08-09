@@ -1,8 +1,8 @@
 package http
 
 import (
+	"bytes"
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,22 +138,62 @@ func TestObservabilityAddsRequestIDToNotFoundResponses(t *testing.T) {
 	}
 }
 
+func TestObservabilityCoversTrailingSlashNotFound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	core, logs := observer.New(zap.DebugLevel)
+	router := newRouter(nil, nil, zap.New(core))
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, livenessPath+"/", nil)
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+	assertUUIDRequestID(t, response.Header().Get(requestIDHeader))
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("access log entries = %d, want 1", len(entries))
+	}
+	if entries[0].Level != zapcore.WarnLevel {
+		t.Fatalf("access log level = %s, want warn", entries[0].Level)
+	}
+	fields := entries[0].ContextMap()
+	if fields["route"] != defaultRouteName || fields["status"] != int64(http.StatusNotFound) {
+		t.Errorf("unexpected trailing-slash fields: %#v", fields)
+	}
+}
+
 func TestObservabilityAndRecoveryKeepRequestIDWhenHandlerPanics(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousErrorWriter := gin.DefaultErrorWriter
-	gin.DefaultErrorWriter = io.Discard
+	var recoveryOutput bytes.Buffer
+	gin.DefaultErrorWriter = &recoveryOutput
 	t.Cleanup(func() { gin.DefaultErrorWriter = previousErrorWriter })
 
 	core, logs := observer.New(zap.DebugLevel)
 	router := newRouter(nil, nil, zap.New(core))
-	router.GET("/panic", func(*gin.Context) { panic("test panic") })
+	router.GET("/panic", func(*gin.Context) { panic("panic-secret") })
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	request := httptest.NewRequest(http.MethodGet, "/panic?token=query-secret", nil)
+	request.Header.Set("Cookie", "session=cookie-secret")
+	request.Header.Set("X-API-Key", "header-secret")
 	router.ServeHTTP(response, request)
 
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	if got, want := response.Body.String(), `{"error":{"code":"internal_error","message":"internal server error"}}`; got != want {
+		t.Fatalf("panic body = %q, want %q", got, want)
+	}
+	for _, secret := range []string{"panic-secret", "query-secret", "cookie-secret", "header-secret"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Errorf("panic response contains secret %q", secret)
+		}
+	}
+	if recoveryOutput.Len() != 0 {
+		t.Fatalf("recovery wrote request/panic details to error writer: %q", recoveryOutput.String())
 	}
 	assertUUIDRequestID(t, response.Header().Get(requestIDHeader))
 	entries := logs.All()
@@ -171,7 +211,7 @@ func TestObservabilityAndRecoveryKeepRequestIDWhenHandlerPanics(t *testing.T) {
 func assertUUIDRequestID(t *testing.T, value string) {
 	t.Helper()
 	parsed, err := uuid.Parse(value)
-	if err != nil || parsed == uuid.Nil || parsed.String() != value {
+	if err != nil || parsed == uuid.Nil || parsed.String() != value || parsed.Version() != uuid.Version(4) {
 		t.Fatalf("request ID = %q, want canonical non-nil UUID", value)
 	}
 }

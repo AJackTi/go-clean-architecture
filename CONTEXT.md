@@ -42,6 +42,7 @@ and delivery workflow when adding a real domain feature.
 - Liveness can succeed while Readiness fails, allowing an orchestrator to keep the process alive while withholding traffic during a dependency outage.
 - Every HTTP response carries an `X-Request-ID`; one valid upstream token is preserved and all other values are replaced with a UUIDv4.
 - The HTTP composition module emits one structured access event after each request through the process logger. It records request ID, method, route pattern, status, response bytes, and duration, but never query strings, bodies, or raw unmatched paths.
+- Handler panics return the stable internal-error envelope without panic values or request metadata; automatic trailing-slash and fixed-path redirects are disabled so route-shape errors remain observable.
 - The checked-in OpenAPI 3.1 document describes the same route set and response contract; `go test ./docs` fails when the document and mounted routes drift.
 
 ## Invariants and policies

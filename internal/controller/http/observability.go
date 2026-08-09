@@ -1,6 +1,7 @@
 package http
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +18,32 @@ const (
 	requestLogMessage = "http request completed"
 	defaultRouteName  = "unmatched"
 )
+
+type recoveryResponse struct {
+	Error recoveryError `json:"error"`
+}
+
+type recoveryError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// sanitizedRecovery converts an unexpected handler panic into the same stable
+// internal-error envelope used by the HTTP adapter. Gin's default recovery
+// logger is deliberately wired to io.Discard: in debug mode it dumps the URL
+// and request headers (including cookies and API keys), which is not safe for
+// a reusable service template. The panic value is never sent to clients or
+// process logs.
+func sanitizedRecovery() gin.HandlerFunc {
+	return gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, _ any) {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, recoveryResponse{
+			Error: recoveryError{
+				Code:    "internal_error",
+				Message: "internal server error",
+			},
+		})
+	})
+}
 
 // accessLogger is the small logging surface needed by the HTTP middleware.
 // Keeping it local makes the middleware straightforward to test without
