@@ -9,18 +9,13 @@ import (
 )
 
 func main() {
-	// Configuration
-	cfg, err := config.NewConfig()
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal("Config error", logger.ErrWrap(err))
+		log.Fatalf("load configuration: %v", err)
 	}
 
-	// Logger
-	logger.Init(cfg.Log.Level)
-
-	// print log to confirm we load correct important values
-	logger.Info("loaded config and init log ok")
-
-	// Main web app run
-	app.Run(cfg)
+	logger.Init(cfg.LogLevel)
+	if err := app.Run(cfg); err != nil {
+		log.Fatalf("run application: %v", err)
+	}
 }

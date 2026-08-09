@@ -1,72 +1,87 @@
+// Package config loads the small set of settings needed by the application.
+//
+// Configuration is intentionally environment-first.  A fresh checkout can
+// run with the documented development defaults, while deployments can provide
+// one explicit value per setting without relying on a working-directory
+// relative YAML file.
 package config
 
 import (
 	"fmt"
-
-	"github.com/ilyakaznacheev/cleanenv"
+	"os"
+	"strconv"
+	"strings"
 )
 
-type (
-	// Config -.
-	Config struct {
-		App  `yaml:"app"`
-		HTTP `yaml:"http"`
-		Log  `yaml:"logger"`
-		PG   `yaml:"postgres"`
-	}
-
-	// App -.
-	App struct {
-		Name    string `env-required:"true" yaml:"name"    env:"APP_NAME"`
-		Env     string `env-required:"true" yaml:"env"     env:"APP_ENV"`
-		Version string `env-required:"true" yaml:"version" env:"APP_VERSION"`
-	}
-
-	// HTTP -.
-	HTTP struct {
-		Port string `env-required:"true" yaml:"port" env:"HTTP_PORT"`
-		Cors *bool  `env-required:"true" yaml:"cors" env:"HTTP_CORS"`
-	}
-
-	// Log -.
-	Log struct {
-		Level string `env-required:"true" yaml:"log_level"   env:"LOG_LEVEL"`
-	}
-
-	// PG -.
-	PG struct {
-		DbName   string `env-required:"true"   yaml:"db_name"    env:"PG_DB_NAME"`
-		Host     string `env-required:"true"   yaml:"host"       env:"PG_HOST"`
-		Port     string `env-required:"true"   yaml:"port"       env:"PG_PORT"`
-		User     string `env-required:"true"   yaml:"user"       env:"PG_USER"`
-		Password string `env-required:"true"   yaml:"password"   env:"PG_PASSWORD"`
-		SSLMode  string `env-required:"true"   yaml:"sslmode"    env:"PG_SSLMODE"`
-	}
+const (
+	defaultAppEnv      = "development"
+	defaultHTTPPort    = "8080"
+	defaultLogLevel    = "info"
+	defaultDatabaseURL = "postgres://localhost:5432/app?sslmode=disable"
 )
 
-const ENV_PROD = "production"
+// Config contains the runtime settings required by the HTTP application.
+// Values are deliberately flat so the composition root has one obvious
+// source of truth for each dependency.
+type Config struct {
+	AppEnv      string
+	HTTPPort    string
+	LogLevel    string
+	DatabaseURL string
+}
 
-// NewConfig returns app config.
-func NewConfig() (*Config, error) {
-	cfg := &Config{}
+// NewConfig is kept as the conventional constructor name used by existing
+// callers.  Load is the preferred name for new code.
+func NewConfig() (*Config, error) { return Load() }
 
-	err := cleanenv.ReadConfig("./config/config.yml", cfg)
-	if err != nil {
-		return nil, fmt.Errorf("read base config error: %w", err)
+// Load reads environment variables and applies safe development defaults.
+// An explicitly empty environment variable is not treated as missing; it is
+// validated and reported so a misspelled/empty deployment setting cannot be
+// silently replaced by a local default.
+func Load() (*Config, error) {
+	return load(os.LookupEnv)
+}
+
+func load(lookup func(string) (string, bool)) (*Config, error) {
+	cfg := &Config{
+		AppEnv:      strings.TrimSpace(valueOrDefault(lookup, "APP_ENV", defaultAppEnv)),
+		HTTPPort:    strings.TrimSpace(valueOrDefault(lookup, "HTTP_PORT", defaultHTTPPort)),
+		LogLevel:    strings.TrimSpace(valueOrDefault(lookup, "LOG_LEVEL", defaultLogLevel)),
+		DatabaseURL: strings.TrimSpace(valueOrDefault(lookup, "DATABASE_URL", defaultDatabaseURL)),
 	}
-	if cfg.App.Env == ENV_PROD {
-		// overwrite some values from /config/config.production.yml
-		err := cleanenv.ReadConfig("./config/config.production.yml", cfg)
-		if err != nil {
-			return nil, fmt.Errorf("read production config error: %w", err)
-		}
-	}
 
-	// lastly, overwrite value from environment variable
-	err = cleanenv.ReadEnv(cfg)
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-
 	return cfg, nil
+}
+
+func valueOrDefault(lookup func(string) (string, bool), key, fallback string) string {
+	if value, ok := lookup(key); ok {
+		return value
+	}
+	return fallback
+}
+
+// Validate checks settings that would otherwise produce a confusing startup
+// failure.  Database URL syntax is intentionally left to the database driver;
+// this package only guarantees that it is present.
+func (c Config) Validate() error {
+	if strings.TrimSpace(c.DatabaseURL) == "" {
+		return fmt.Errorf("config: DATABASE_URL must not be empty")
+	}
+
+	port, err := strconv.Atoi(strings.TrimSpace(c.HTTPPort))
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("config: HTTP_PORT must be an integer between 1 and 65535 (got %q)", c.HTTPPort)
+	}
+
+	if strings.TrimSpace(c.AppEnv) == "" {
+		return fmt.Errorf("config: APP_ENV must not be empty")
+	}
+	if strings.TrimSpace(c.LogLevel) == "" {
+		return fmt.Errorf("config: LOG_LEVEL must not be empty")
+	}
+
+	return nil
 }
