@@ -25,7 +25,6 @@ func New(cfg *config.Config) (Postgres, error) {
 			"sslmode": cfg.PG.SSLMode,
 		},
 	})
-
 	if err != nil {
 		return nil, err
 	}

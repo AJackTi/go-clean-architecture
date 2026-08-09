@@ -4,17 +4,9 @@ package http
 import (
 	"net/http"
 
+	"github.com/AJackTi/go-clean-architecture/internal/common"
 	v1 "github.com/AJackTi/go-clean-architecture/internal/controller/http/v1"
 	"github.com/AJackTi/go-clean-architecture/internal/entity"
-
-	"github.com/AJackTi/go-clean-architecture/internal/common"
-
-	"github.com/AJackTi/go-clean-architecture/pkg/notification"
-
-	"github.com/AJackTi/go-clean-architecture/pkg/aws"
-
-	sseHandler "github.com/AJackTi/go-clean-architecture/pkg/sse"
-
 	"github.com/gin-gonic/gin"
 
 	swaggerFiles "github.com/swaggo/files"
@@ -23,7 +15,6 @@ import (
 	// Swagger docs, must have in order to be able to display Swagger doc
 	"github.com/AJackTi/go-clean-architecture/config"
 	"github.com/AJackTi/go-clean-architecture/internal/usecase"
-	"github.com/AJackTi/go-clean-architecture/pkg/graph"
 	"github.com/AJackTi/go-clean-architecture/pkg/postgres"
 )
 
@@ -37,10 +28,7 @@ import (
 func NewRouter(handler *gin.Engine,
 	cfg *config.Config,
 	pg postgres.Postgres,
-	graph *graph.Graph,
-	notificationModel *notification.Notification,
-	sseHandler *sseHandler.SSEHandler,
-	s3 *aws.S3) {
+) {
 	// Options
 	handler.Use(gin.Logger())
 	handler.Use(gin.Recovery())
@@ -56,9 +44,9 @@ func NewRouter(handler *gin.Engine,
 
 	// complex health check: check all dependencies
 	handler.GET("/api/healthz", func(c *gin.Context) {
-		error := pg.Ping()
-		if error != nil {
+		if err := pg.Ping(); err != nil {
 			common.ErrorResponse(c, http.StatusInternalServerError, "cannot reach db", "cannot reach db")
+			return
 		}
 		c.Status(http.StatusOK)
 	})
@@ -69,15 +57,7 @@ func NewRouter(handler *gin.Engine,
 		// Use case
 		itemUseCase := usecase.NewItemUseCase(entity.Items(pg))
 
-		sseHandler.HandleEvents()
-
-		handlerController := v1.New(
-			itemUseCase,
-			cfg,
-			graph,
-			notificationModel,
-			sseHandler,
-			s3)
+		handlerController := v1.New(itemUseCase)
 
 		handlerController.NewItemRoutes(h)
 	}

@@ -5,7 +5,7 @@ Go-Clean-Architecture
 Need to install these tools first:
 
 1. Docker and docker-compose
-2. Golang v1.18+
+2. Go 1.26.5+
 3. Golang-migrate tool `brew install golang-migrate`
 4. Golangci-lint tool `brew install golangci-lint`
 5. Hadolint tool `brew install hadolint`

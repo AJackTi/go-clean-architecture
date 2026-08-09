@@ -11,8 +11,7 @@ type ItemUseCase struct {
 	Store *entity.ItemStore
 }
 
-type CreateItemRequest struct {
-}
+type CreateItemRequest struct{}
 
 func NewItemUseCase(store *entity.ItemStore) *ItemUseCase {
 	return &ItemUseCase{Store: store}

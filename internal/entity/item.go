@@ -17,8 +17,7 @@ func Items(sess postgres.Postgres) *ItemStore {
 }
 
 // Item entity
-type Item struct {
-}
+type Item struct{}
 
 func (e *Item) Store(sess db.Session) db.Store {
 	return sess.Collection(ItemTableName)

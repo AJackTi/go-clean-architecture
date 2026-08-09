@@ -21,11 +21,3 @@ postgres:
   user: "user"
   password: "pass"
   sslmode: "disable"
-
-s3aws:
-  key_id: ""
-  access_key: ""
-  region: "ap-southeast-1"
-  acl: "public-read"
-  bucket: "assets.bucket.com"
-  path_avatar: ""

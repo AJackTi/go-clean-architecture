@@ -1,120 +1,65 @@
 name: CI
-on: pull_request
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.5"
+  GOFLAGS: "-mod=readonly"
+  CGO_ENABLED: "0"
 
 jobs:
-  view-name:
-    name: runner / view-name
+  quality:
+    name: Go quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: View the information of the pusher
-        run: |
-          echo "The name of the pusher: ${{ github.event.pusher.name }}"
-          echo "The email of the pusher: ${{ github.event.pusher.email }}"
-
-  golangci-lint:
-    name: runner / golangci-lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out code into the Go module directory
+      - name: Check out source
         uses: actions/checkout@v7
-      - name: golangci-lint
-        uses: reviewdog/action-golangci-lint@v2
-        with:
-          golangci_lint_flags: "--timeout=10m --verbose"
 
-  yamllint:
-    name: runner / yamllint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: reviewdog/action-yamllint@v1
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
-          fail_on_error: true
-          reporter: github-pr-review
-          yamllint_flags: '-d "{extends: default, rules: {truthy: disable}}" .'
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-  hadolint:
-    name: runner / hadolint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: reviewdog/action-hadolint@v1
-        with:
-          fail_on_error: true
-          reporter: github-pr-review
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
 
-  dotenv-linter:
-    name: runner / dotenv-linter
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dotenv-linter/action-dotenv-linter@v3
-        with:
-          reporter: github-pr-review
-
-  check-dependencies:
-    name: runner / check-dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-      - name: WriteGoList
-        run: go list -json -m all > go.list
-      - name: Nancy
-        uses: sonatype-nexus-community/nancy-github-action@main
-        continue-on-error: true
-
-  tests:
-    name: runner / tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker-practice/actions-setup-docker@master
-        with:
-          docker_version: "20.10"
-      - uses: actions/setup-go@v7
-        with:
-          go-version: ~1.18
-      - name: Setup Golang caches
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-golang-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-golang-
-
-      - name: Unit Tests
+      - name: Check module files
         run: |
-          CVPKG=$(go list ./... | grep -v mocks | tr '\n' ',')
-          go test -v -coverpkg=${CVPKG} -coverprofile=coverage.out -covermode=count  ./internal/...
+          go mod tidy -diff
+          go mod verify
 
-      - name: Setup aws cli
-        uses: unfor19/install-aws-cli-action@1.0.8
+      - name: Vet
+        run: go vet ./...
 
-      - name: Generate covarege Status
-        run: |
-          set -x
+      - name: Test
+        run: go test -race -covermode=atomic ./...
 
-          total=`go tool cover -func=coverage.out | grep total | grep -Eo '[0-9]+\.[0-9]+'`
-          echo "total cov: $total"
-          echo "prev build cov: $prev_total"
-          (( $(echo "$total > $prev_total" | bc -l) )) && STATE=success || STATE=failure
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
 
-          if (( $(echo "$total <= 50" | bc -l) )) ; then
-            COLOR=red
-          elif (( $(echo "$total > 80" | bc -l) )); then
-            COLOR=green
-          else
-            COLOR=orange
-          fi
-          curl "https://img.shields.io/badge/coverage-$total%25-$COLOR" > badge.svg
+      - name: Lint
+        run: "$(go env GOPATH)/bin/golangci-lint run --timeout=5m ./..."
 
-        env:
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-          PULL_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build --tag clean-architecture:ci .

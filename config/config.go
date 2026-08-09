@@ -9,11 +9,10 @@ import (
 type (
 	// Config -.
 	Config struct {
-		App   `yaml:"app"`
-		HTTP  `yaml:"http"`
-		Log   `yaml:"logger"`
-		PG    `yaml:"postgres"`
-		S3AWS `yaml:"s3aws"`
+		App  `yaml:"app"`
+		HTTP `yaml:"http"`
+		Log  `yaml:"logger"`
+		PG   `yaml:"postgres"`
 	}
 
 	// App -.
@@ -42,16 +41,6 @@ type (
 		User     string `env-required:"true"   yaml:"user"       env:"PG_USER"`
 		Password string `env-required:"true"   yaml:"password"   env:"PG_PASSWORD"`
 		SSLMode  string `env-required:"true"   yaml:"sslmode"    env:"PG_SSLMODE"`
-	}
-
-	// S3 AWS -.
-	S3AWS struct {
-		KeyID      string `env-required:"true"   yaml:"key_id"             env:"KEY_ID"`
-		AccessKey  string `env-required:"true"   yaml:"access_key"         env:"ACCESS_KEY"`
-		Region     string `env-required:"true"   yaml:"region"             env:"REGION"`
-		ACL        string `env-required:"true"   yaml:"acl"                env:"ACL"`
-		Bucket     string `env-required:"true"   yaml:"bucket"             env:"BUCKET"`
-		PathAvatar string `env-required:"true"   yaml:"path_avatar"        env:"PATH_AVATAR"`
 	}
 )
 

@@ -1,0 +1,14 @@
+.git
+.github
+.deployment
+.env
+.env.*
+!.env.example
+coverage
+*.out
+*.log
+bin
+tmp
+docs
+resource
+vendor
