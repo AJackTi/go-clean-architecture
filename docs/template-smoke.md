@@ -27,4 +27,7 @@ Running `bash scripts/template-smoke.sh` directly is equivalent.
 The source snapshot defaults to `HEAD`, matching a GitHub template checkout.
 Set `TEMPLATE_SOURCE_REF` to another committed ref when comparing a release
 tag or branch. Set `KEEP_TEMPLATE_SMOKE=1` to retain the disposable checkout
-for debugging after the command exits.
+for debugging after the command exits. The assertions tolerate a checkout that
+has already been bootstrapped with the smoke target's owner, author, or email;
+this keeps the checked-in workflow safe when a generated downstream repository
+runs it as part of its own CI.

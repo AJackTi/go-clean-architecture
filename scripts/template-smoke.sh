@@ -26,6 +26,20 @@ log() {
 	echo "template-smoke: $*"
 }
 
+title_from_slug() {
+	local slug="$1"
+	local part first rest result=""
+	local IFS='-_.'
+	read -r -a parts <<< "${slug}"
+	for part in "${parts[@]}"; do
+		[[ -n "${part}" ]] || continue
+		first="$(printf '%s' "${part:0:1}" | tr '[:lower:]' '[:upper:]')"
+		rest="${part:1}"
+		result+=" ${first}${rest}"
+	done
+	printf '%s' "${result# }"
+}
+
 show_source_file() {
 	local path="$1"
 	git -C "${root}" show "${source_commit}:${path}"
@@ -85,6 +99,7 @@ if [[ "${old_module}" == github.com/*/* ]]; then
 fi
 old_title="$(show_source_file README.md | awk '/^# / { sub(/^# /, ""); print; exit }')"
 old_author="$(show_source_file LICENSE | sed -n -E 's/^Copyright \(c\) [0-9-]+[[:space:]]+//p' | awk 'NR == 1 { print; exit }')"
+new_title="$(title_from_slug "${new_slug}")"
 
 # Policy documents are the only files from which bootstrap intentionally
 # discovers maintainer addresses.  Keep the same scope here and fail if any
@@ -141,20 +156,38 @@ assert_file_contains "${downstream}/.github/CODEOWNERS" "@${new_owner}"
 assert_file_contains "${downstream}/LICENSE" "${new_author}"
 assert_file_contains "${downstream}/SECURITY.md" "${new_email}"
 
-assert_template_token_absent "module path" "${old_module}"
-assert_template_token_absent "project slug" "${old_slug}"
-assert_template_token_absent "repository title" "${old_title}"
-assert_template_token_absent "GitHub owner" "${old_owner}"
-assert_template_token_absent "copyright holder" "${old_author}"
+# A downstream repository generated from this template can run this same
+# workflow.  In that case one or more source values may already equal the
+# smoke target (for example, the GitHub owner), so retaining that value is
+# expected rather than evidence that bootstrap failed to rewrite it.
+if [[ "${old_module}" != "${new_module}" ]]; then
+	assert_template_token_absent "module path" "${old_module}"
+fi
+if [[ "${old_slug}" != "${new_slug}" ]]; then
+	assert_template_token_absent "project slug" "${old_slug}"
+fi
+if [[ "${old_title}" != "${new_title}" ]]; then
+	assert_template_token_absent "repository title" "${old_title}"
+fi
+if [[ "${old_owner}" != "${new_owner}" ]]; then
+	assert_template_token_absent "GitHub owner" "${old_owner}"
+fi
+if [[ "${old_author}" != "${new_author}" ]]; then
+	assert_template_token_absent "copyright holder" "${old_author}"
+fi
 while IFS= read -r old_email; do
 	[[ -n "${old_email}" ]] || continue
+	[[ "${old_email}" == "${new_email}" ]] && continue
 	assert_template_token_absent "maintainer email" "${old_email}"
 done <<< "${old_emails}"
 
 changed_files="$(git -C "${downstream}" diff --name-only)"
-[[ -n "${changed_files}" ]] || fail "bootstrap produced no downstream changes"
-grep -qxF 'go.mod' <<< "${changed_files}" || fail "bootstrap did not update go.mod"
-grep -qxF 'README.md' <<< "${changed_files}" || fail "bootstrap did not update README.md"
+if [[ -n "${changed_files}" ]]; then
+	grep -qxF 'go.mod' <<< "${changed_files}" || fail "bootstrap did not update go.mod"
+	grep -qxF 'README.md' <<< "${changed_files}" || fail "bootstrap did not update README.md"
+else
+	log "bootstrap target already matches this checkout"
+fi
 [[ -z "$(git -C "${downstream}" ls-files --others --exclude-standard)" ]] || \
 	fail "bootstrap created unexpected untracked files"
 git -C "${downstream}" diff --check
@@ -170,9 +203,13 @@ log "testing generated downstream module"
 )
 
 log "committing and checking generated downstream diff"
-git -C "${downstream}" add --all
-git -C "${downstream}" diff --cached --check
-git -C "${downstream}" commit --quiet --message "bootstrap project"
+if [[ -n "${changed_files}" ]]; then
+	git -C "${downstream}" add --all
+	git -C "${downstream}" diff --cached --check
+	git -C "${downstream}" commit --quiet --message "bootstrap project"
+else
+	log "downstream checkout already contains the bootstrap target"
+fi
 [[ -z "$(git -C "${downstream}" status --porcelain=v1 --untracked-files=all)" ]] || \
 	fail "generated downstream repository is dirty after its first commit"
 
