@@ -402,8 +402,14 @@ func makeReplacements(meta metadata, opts options) ([]replacement, error) {
 		items = append(items,
 			replacement{old: "github.com/" + meta.oldOwner, new: "github.com/" + newOwner},
 			replacement{old: "@" + meta.oldOwner, new: "@" + newOwner},
-			replacement{old: meta.oldOwner, new: plainOwner},
 		)
+		// A raw owner token is changed to the display author only when the
+		// GitHub owner itself changes.  Once a checkout has been bootstrapped,
+		// its owner already equals newOwner; replacing that token again would
+		// make an otherwise identical second bootstrap non-idempotent.
+		if meta.oldOwner != newOwner {
+			items = append(items, replacement{old: meta.oldOwner, new: plainOwner})
+		}
 	}
 	if meta.oldAuthor != "" && plainOwner != "" {
 		items = append(items, replacement{old: meta.oldAuthor, new: plainOwner})

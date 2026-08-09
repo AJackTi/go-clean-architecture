@@ -1,0 +1,488 @@
+openapi: 3.1.0
+info:
+  title: Go Clean Architecture API
+  version: 0.1.0
+  description: |
+    A small production-oriented HTTP API used as the example vertical slice
+    for this Go template. The API is intentionally versioned under `/api/v1`
+    for domain resources. Operational probes remain unversioned so deployment
+    tooling can keep using them across API revisions.
+  license:
+    name: MIT
+    identifier: MIT
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local development server
+# The template intentionally exposes these routes without an authentication
+# scheme. Downstream services should add their own security requirement.
+security: []
+tags:
+  - name: Operations
+    description: Process liveness and dependency readiness probes.
+  - name: Items
+    description: The example Item vertical slice.
+paths:
+  /api/health:
+    parameters:
+      - $ref: '#/components/parameters/RequestID'
+    get:
+      tags: [Operations]
+      operationId: getLiveness
+      summary: Check process liveness
+      description: >-
+        Returns `ok` when the process is serving requests. This probe does not
+        contact PostgreSQL and may remain healthy while readiness is degraded.
+      responses:
+        '200':
+          description: The process is alive.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LivenessResponse'
+              example:
+                status: ok
+
+  /api/healthz:
+    parameters:
+      - $ref: '#/components/parameters/RequestID'
+    get:
+      tags: [Operations]
+      operationId: getReadiness
+      summary: Check dependency readiness
+      description: >-
+        Performs a PostgreSQL readiness check with a two-second deadline. A
+        failed or missing dependency check fails closed with HTTP 503.
+      responses:
+        '200':
+          description: Required dependencies are available.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessOKResponse'
+              example:
+                status: ok
+        '503':
+          description: A required dependency is unavailable.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessUnavailableResponse'
+              example:
+                status: unavailable
+
+  /api/v1/items:
+    parameters:
+      - $ref: '#/components/parameters/RequestID'
+    post:
+      tags: [Items]
+      operationId: createItem
+      summary: Create an item
+      description: >-
+        Creates an Item. The server owns the UUIDv4 identity and UTC creation
+        time. Name and description are edge-trimmed before domain validation.
+        Request JSON is strict: unknown fields, malformed JSON, trailing JSON
+        values, and bodies larger than 1 MiB are rejected with HTTP 400.
+      x-request-body-max-bytes: 1048576
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateItemRequest'
+            example:
+              name: Mechanical keyboard
+              description: Hot-swappable
+      responses:
+        '201':
+          description: Item created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+            Location:
+              required: true
+              description: Relative URL of the newly created Item.
+              schema:
+                type: string
+                format: uri-reference
+              example: /api/v1/items/c80c1043-a6cd-42bf-984e-0191352f4b26
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemDataResponse'
+              example:
+                data:
+                  id: c80c1043-a6cd-42bf-984e-0191352f4b26
+                  name: Mechanical keyboard
+                  description: Hot-swappable
+                  created_at: '2026-08-09T12:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestBody'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      tags: [Items]
+      operationId: listItems
+      summary: List items
+      description: >-
+        Returns a deterministic newest-first page ordered by
+        `created_at DESC, id DESC`. The service requests one look-ahead row to
+        calculate `meta.has_more`. Offset pagination is not a snapshot.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: A page of items. `data` is always an array, including when empty.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemListResponse'
+              example:
+                data:
+                  - id: 15709605-fde8-49ce-b867-c9af294f2bf5
+                    name: Mechanical keyboard
+                    description: Hot-swappable
+                    created_at: '2026-08-09T12:30:00Z'
+                meta:
+                  limit: 20
+                  offset: 0
+                  has_more: false
+        '400':
+          $ref: '#/components/responses/BadRequestPagination'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/items/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RequestID'
+    get:
+      tags: [Items]
+      operationId: getItem
+      summary: Fetch an item
+      description: Fetches one Item by its UUID identity.
+      parameters:
+        - $ref: '#/components/parameters/ItemID'
+      responses:
+        '200':
+          description: The requested item.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemDataResponse'
+              example:
+                data:
+                  id: 0f3f84c5-64b7-4df5-a6a6-fe07f97a85ed
+                  name: Mechanical keyboard
+                  description: Quiet switches
+                  created_at: '2026-08-09T12:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestItemID'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: >-
+        Optional correlation token. A single HTTP token of at most 128 ASCII
+        bytes is preserved; missing, malformed, oversized, or duplicate values
+        are replaced by the server with a UUIDv4.
+      schema:
+        type: string
+        maxLength: 128
+        pattern: "^[-A-Za-z0-9!#$%&'*+.^_`|~]{1,128}$"
+    ItemID:
+      name: id
+      in: path
+      required: true
+      description: UUID identity assigned by the server.
+      schema:
+        type: string
+        format: uuid
+      example: 0f3f84c5-64b7-4df5-a6a6-fe07f97a85ed
+    Limit:
+      name: limit
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: >-
+        Number of items to return. Omitted, empty, or zero uses the default of
+        20. Values from 1 through 100 are accepted; values above 100 are
+        rejected.
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
+        maximum: 100
+        default: 20
+      example: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: Zero-based number of items to skip. Omitted or empty means 0.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+      example: 0
+  headers:
+    RequestID:
+      required: true
+      description: >-
+        Correlation token assigned to this response. It is either the accepted
+        upstream token or a server-generated canonical UUIDv4.
+      schema:
+        type: string
+        maxLength: 128
+        pattern: "^[-A-Za-z0-9!#$%&'*+.^_`|~]{1,128}$"
+  responses:
+    BadRequestBody:
+      description: The request body is missing, malformed, too large, or not strict JSON.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: bad_request
+              message: invalid request body
+    BadRequestItemID:
+      description: The path parameter is not a valid non-zero UUID.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: bad_request
+              message: invalid item id
+    BadRequestPagination:
+      description: A pagination query parameter is malformed or outside its allowed range.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: bad_request
+              message: invalid pagination parameters
+    ValidationError:
+      description: The Item violates a domain invariant.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: validation_error
+              message: invalid item
+    NotFound:
+      description: The requested Item does not exist.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: not_found
+              message: item not found
+    Conflict:
+      description: The Item conflicts with existing state.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: conflict
+              message: item already exists
+    InternalError:
+      description: An internal dependency failed; provider details are not exposed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: internal_error
+              message: internal server error
+  schemas:
+    Item:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated RFC 4122 UUIDv4 identity.
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          example: c80c1043-a6cd-42bf-984e-0191352f4b26
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Edge-trimmed Unicode label.
+          example: Mechanical keyboard
+        description:
+          type: string
+          maxLength: 2000
+          description: Edge-trimmed optional Unicode text; an omitted value is returned as an empty string.
+          example: Hot-swappable
+        created_at:
+          type: string
+          format: date-time
+          description: Server-assigned immutable UTC creation instant.
+          example: '2026-08-09T12:30:00Z'
+    CreateItemRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >-
+            Required Unicode label. The server trims Unicode whitespace at both
+            edges, then requires 1–120 Unicode characters in the canonical value.
+          x-normalized-min-length: 1
+          x-normalized-max-length: 120
+        description:
+          type: string
+          description: >-
+            Optional Unicode text. The server trims Unicode whitespace at both
+            edges, then permits at most 2,000 Unicode characters in the
+            canonical value.
+          x-normalized-max-length: 2000
+    ItemDataResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Item'
+    ItemListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    PageMeta:
+      type: object
+      additionalProperties: false
+      required: [limit, offset, has_more]
+      properties:
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+          description: Normalized page size.
+        offset:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Normalized zero-based offset.
+        has_more:
+          type: boolean
+          description: Whether another item exists after this page.
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetails'
+    ErrorDetails:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [bad_request, validation_error, not_found, conflict, internal_error]
+          description: Stable machine-readable error code.
+        message:
+          type: string
+          minLength: 1
+          description: Stable sanitized human-readable message.
+    LivenessResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    ReadinessOKResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    ReadinessUnavailableResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: unavailable

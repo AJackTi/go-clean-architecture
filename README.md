@@ -148,6 +148,10 @@ existing changes are intentional and reviewed.
 
 The running app exposes the following endpoints:
 
+The machine-readable [OpenAPI 3.1 contract](docs/openapi.yaml) is the source
+for client generation and endpoint examples. The contract is checked in CI
+against the routes mounted by the HTTP adapter.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Liveness; does not query PostgreSQL |
@@ -179,6 +183,13 @@ Typical status mappings are `400` for malformed transport input, `422` for
 domain validation, `404` for a missing item, `409` for a conflict, and `500`
 for an unavailable internal dependency.
 
+Every response includes an `X-Request-ID` header. A valid single upstream
+value is preserved; missing, malformed, oversized, or duplicate values are
+replaced with a canonical UUIDv4. The HTTP adapter emits one structured access
+event through the process logger with the request ID, method, route pattern,
+status, response bytes, and duration. Query strings, request bodies, and raw
+unmatched paths are deliberately excluded from logs.
+
 ## Repository map
 
 | Path | Responsibility |
@@ -196,6 +207,7 @@ for an unavailable internal dependency.
 | [`pkg/httpserver`](pkg/httpserver) | Reusable server lifecycle module |
 | [`pkg/logger`](pkg/logger) | Process logging seam |
 | [`db/migrations`](db/migrations) | Versioned PostgreSQL schema changes |
+| [`scripts/template-smoke.sh`](scripts/template-smoke.sh) | Verify a clean generated repository end to end |
 | [`.github`](.github) | CI, dependency updates, and contribution workflow |
 
 ## Adding a feature
@@ -209,8 +221,8 @@ Use the `Item` vertical slice as the template:
 3. Add the HTTP adapter and contract tests beside the feature.
 4. Wire the concrete adapters only in `internal/app`.
 5. Add an explicit migration when the schema changes.
-6. Update `CONTEXT.md`, an ADR when a durable decision changes, and this
-   README when the public contract changes.
+6. Update `CONTEXT.md`, [`docs/openapi.yaml`](docs/openapi.yaml), an ADR when a
+   durable decision changes, and this README when the public contract changes.
 
 Prefer a deep interface with a small caller-facing surface. Apply the deletion
 test before introducing another module or seam: if deleting it would not
@@ -254,6 +266,8 @@ tagging a version.
 
 - [Architecture context](CONTEXT.md)
 - [Architecture decisions](docs/adr/)
+- [OpenAPI 3.1 contract](docs/openapi.yaml)
+- [Downstream template smoke test](docs/template-smoke.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)

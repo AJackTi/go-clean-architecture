@@ -40,6 +40,9 @@ and delivery workflow when adding a real domain feature.
 - **Liveness** is the process-level signal at `/api/health`; it is independent of PostgreSQL.
 - **Readiness** is the dependency-level signal at `/api/healthz`; it performs a PostgreSQL ping with a two-second timeout.
 - Liveness can succeed while Readiness fails, allowing an orchestrator to keep the process alive while withholding traffic during a dependency outage.
+- Every HTTP response carries an `X-Request-ID`; one valid upstream token is preserved and all other values are replaced with a UUIDv4.
+- The HTTP composition module emits one structured access event after each request through the process logger. It records request ID, method, route pattern, status, response bytes, and duration, but never query strings, bodies, or raw unmatched paths.
+- The checked-in OpenAPI 3.1 document describes the same route set and response contract; `go test ./docs` fails when the document and mounted routes drift.
 
 ## Invariants and policies
 
@@ -60,10 +63,11 @@ and delivery workflow when adding a real domain feature.
 | Memory adapter | `internal/item/memory` | Provide a race-safe, deterministic Store for tests and lightweight local runs. |
 | PostgreSQL adapter | `internal/item/postgres` | Implement Store with pgx and explicit parameterized SQL. |
 | HTTP adapter | `internal/item/httpapi` | Decode strict JSON, parse paths/queries, enforce body limits, and map errors/statuses. |
-| HTTP composition | `internal/controller/http` | Mount health endpoints and versioned routes. |
+| HTTP composition | `internal/controller/http` | Mount health endpoints and versioned routes, assign request IDs, and emit structured access events. |
 | Runtime modules | `pkg/httpserver`, `pkg/logger` | Provide explicit HTTP lifecycle and process-wide structured logging seams. |
 | Commands | `cmd/app`, `cmd/bootstrap`, `cmd/migrate`, `cmd/healthcheck` | Customize a clean checkout, start the app, apply migrations, and probe readiness in the minimal runtime image. |
 | Schema | `db/migrations` | Versioned PostgreSQL schema changes with paired up/down files. |
+| Contract documentation | `docs/openapi.yaml`, `docs/openapi_test.go` | Publish and verify the machine-readable HTTP interface. |
 
 The intended dependency direction is:
 

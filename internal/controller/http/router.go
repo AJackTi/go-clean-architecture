@@ -23,8 +23,12 @@ type ReadinessCheck func(context.Context) error
 
 // NewRouter wires middleware, operational endpoints, and the versioned API.
 func NewRouter(items httpapi.Service, readiness ReadinessCheck) *gin.Engine {
+	return newRouter(items, readiness, processAccessLogger{})
+}
+
+func newRouter(items httpapi.Service, readiness ReadinessCheck, accessLog accessLogger) *gin.Engine {
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(observabilityMiddleware(accessLog), gin.Recovery())
 	_ = router.SetTrustedProxies(nil)
 
 	router.GET(livenessPath, func(c *gin.Context) {

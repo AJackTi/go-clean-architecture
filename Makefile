@@ -12,7 +12,7 @@ HEALTHCHECK_BINARY ?= $(BIN_DIR)/healthcheck
 GOLANGCI_LINT ?= golangci-lint
 GOVULNCHECK_VERSION ?= v1.6.0
 
-.PHONY: help env-check fmt fmt-check tidy-check verify vet test test-race lint vuln build check \
+.PHONY: help env-check fmt fmt-check tidy-check verify vet test test-race lint vuln build check template-smoke \
 	compose-config compose-build compose-up compose-down compose-logs logs migrate migrate-up \
 	migrate-down migrate-version migrate-step
 
@@ -64,6 +64,9 @@ build: ## Build the application and migration binaries
 	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false -o "$(HEALTHCHECK_BINARY)" ./cmd/healthcheck
 
 check: fmt-check tidy-check verify vet test test-race lint vuln build ## Run the complete local quality gate
+
+template-smoke: ## Exercise bootstrap in a disposable downstream repository
+	bash scripts/template-smoke.sh
 
 compose-config: env-check ## Validate the canonical Compose file
 	$(COMPOSE) --env-file "$(ENV_FILE)" config --quiet

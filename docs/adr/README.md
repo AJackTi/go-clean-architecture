@@ -14,6 +14,8 @@ distinguish intentional constraints from accidental code shape.
 | [0004](0004-server-owned-item-identity-and-time.md) | Generate Item identity and creation time in the Item module | Accepted |
 | [0005](0005-explicit-migration-lifecycle.md) | Apply migrations as an explicit lifecycle step | Accepted |
 | [0006](0006-environment-first-config-and-explicit-http-lifecycle.md) | Use environment-first configuration and an explicit HTTP lifecycle | Accepted |
+| [0007](0007-request-ids-and-structured-access-events.md) | Assign request IDs and emit structured access events | Accepted |
+| [0008](0008-openapi-contract-and-route-drift-check.md) | Keep a checked-in OpenAPI contract beside the HTTP adapter | Accepted |
 
 ## Adding a decision
 

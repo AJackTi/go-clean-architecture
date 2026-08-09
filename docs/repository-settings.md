@@ -32,7 +32,8 @@ Protect `main` with a repository ruleset:
   - `PostgreSQL integration`;
   - `Build binaries`;
   - `Go vulnerability scan`;
-  - `Docker build and scan`.
+  - `Docker build and scan`;
+  - `Downstream template checkout`.
 
 Keep the administrator bypass list small. For a one-maintainer fork, allow an
 explicit emergency bypass but require a follow-up pull request that documents

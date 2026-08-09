@@ -110,6 +110,32 @@ func TestRunDryRunDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestRunIsIdempotentAfterOwnerAndAuthorCustomization(t *testing.T) {
+	root := newFixture(t)
+	args := []string{
+		"--root", root,
+		"--module", "github.com/newowner/new-project",
+		"--slug", "new-project",
+		"--owner", "newowner",
+		"--author", "New Author",
+		"--email", "new@example.com",
+	}
+
+	var output bytes.Buffer
+	if err := run(args, &output, &output); err != nil {
+		t.Fatalf("first bootstrap error = %v", err)
+	}
+
+	output.Reset()
+	secondArgs := append(append([]string(nil), args...), "--force", "--dry-run")
+	if err := run(secondArgs, &output, &output); err != nil {
+		t.Fatalf("second bootstrap dry-run error = %v", err)
+	}
+	if got := output.String(); !strings.Contains(got, "dry-run: 0 file(s) would change") {
+		t.Fatalf("second bootstrap would rewrite files: %s", got)
+	}
+}
+
 func TestRunRefusesDirtyWorktreeUnlessForced(t *testing.T) {
 	root := newFixture(t)
 	readmePath := filepath.Join(root, "README.md")

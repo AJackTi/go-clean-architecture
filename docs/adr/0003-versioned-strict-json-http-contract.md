@@ -13,6 +13,11 @@ single-resource responses use `{"data": ...}`, list responses use
 are strict JSON (unknown fields and trailing values are rejected), are bounded
 to 1 MiB by default, and return `201 Created` with a `Location` header.
 
+The machine-readable OpenAPI 3.1 representation of this contract lives in
+[`docs/openapi.yaml`](../openapi.yaml). A contract test compares its operations
+with the routes mounted by the HTTP adapter so adding or removing an endpoint
+cannot silently leave the public documentation stale.
+
 ## Consequences
 
 - Clients can generate predictable integrations from one documented envelope
