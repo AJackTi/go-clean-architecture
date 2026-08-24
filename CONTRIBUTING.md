@@ -17,7 +17,7 @@ useful as the starting point for a new service.
 ## Development setup
 
 Use the Go version declared by `go.mod` (the current toolchain directive is
-Go 1.26.5), Docker Compose v2, `make`, and golangci-lint v2.12.2 or newer.
+Go 1.26.6), Docker Compose v2, `make`, and golangci-lint v2.12.2 or newer.
 
 ```sh
 git clone https://github.com/AJackTi/go-clean-architecture.git

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/AJackTi/go-clean-architecture/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AJackTi/go-clean-architecture/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/AJackTi/go-clean-architecture.svg)](https://pkg.go.dev/github.com/AJackTi/go-clean-architecture)
-[![Go version](https://img.shields.io/badge/go-1.26.5-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+[![Go version](https://img.shields.io/badge/go-1.26.6-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A production-minded Go HTTP service template for teams that want a clear
@@ -59,7 +59,7 @@ The design vocabulary and decisions are documented in
 
 - Docker Engine/Desktop with the Compose v2 plugin (`docker compose`)
 - `make` and `curl` for the documented commands
-- Go 1.26.5 for host-side development
+- Go 1.26.6 for host-side development
 - golangci-lint v2.12.2 for `make lint` (or set `GOLANGCI_LINT` to its path)
 
 ### Start the stack
