@@ -1,6 +1,9 @@
 # IDE
 /.idea/
 /.vscode/
+.DS_Store
+*.swp
+*.swo
 
 # Config
 .env
@@ -23,5 +26,10 @@
 # Dependency directories (remove the comment below to include it)
 vendor/
 coverage/
+coverage.out
+coverage.html
+*.prof
+*.pprof
 /bin/
 /dist/
+/tmp/

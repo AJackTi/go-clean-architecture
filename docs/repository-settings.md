@@ -10,6 +10,9 @@ service from the template.
 - Description: `Production-minded Go Clean Architecture template with PostgreSQL, strict HTTP contracts, Docker Compose, and hardened CI.`
 - Website: leave empty unless the project has maintained documentation.
 - Mark the repository as a **Template repository**.
+- Keep the repository public when it is intended to appear in GitHub's
+  template picker; private repositories can still be used as organization
+  templates when the plan permits it.
 - Topics: `go`, `golang`, `clean-architecture`, `hexagonal-architecture`,
   `postgresql`, `gin`, `docker`, `github-template`, `rest-api`, `testing`.
 - Keep Issues enabled. Enable Discussions only when maintainers can actively

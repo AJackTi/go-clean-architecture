@@ -185,6 +185,12 @@ go test -race ./internal/item/postgres
 
 ## Customize the template
 
+This repository is designed to be used as a GitHub template. In the canonical
+repository, enable **Settings → General → Template repository** before sharing
+it with a team. Then protect `main` with the rules and required checks listed
+in [`docs/repository-settings.md`](docs/repository-settings.md). Those are
+GitHub settings and cannot be represented in Git history.
+
 Run the bootstrap command from a clean checkout immediately after creating a
 repository from this template. Preview the tracked text files it will update,
 then repeat the command without `--dry-run`:
