@@ -60,7 +60,7 @@ The design vocabulary and decisions are documented in
 - Docker Engine/Desktop with the Compose v2 plugin (`docker compose`)
 - `make` and `curl` for the documented commands
 - Go 1.27.4 for host-side development
-- golangci-lint v2.12.2 for `make lint` (or set `GOLANGCI_LINT` to its path)
+- golangci-lint v2.15.0 for `make lint` (or set `GOLANGCI_LINT` to its path)
 
 ### Start the stack
 
